@@ -21,7 +21,7 @@
 
 | 에이전트 | **책임 (YES)** | **책임 밖 (NO)** |
 |---|---|---|
-| **Disclosure Agent** | OpenDART 공시 조회 / 공시 유형 분류 / 핵심 사실 추출 + 자연어 요약 / raw_signal 라벨링(점수 아님) / 예정 공시 일정 알림 | 시장 반응 해석 → News / 투자 판단 → Judge / 사업부별 원인 추론 → Report / 재무 데이터 재계산 → Portfolio Service |
+| **Disclosure Agent** | `libra-ingest`가 전달한 공시 payload 해석 / 공시 유형 분류 / 핵심 사실 추출 + 자연어 요약 / raw_signal 라벨링(점수 아님) / 예정 공시 일정 알림 | OpenDART 원천 수집/재시도/스케줄링 → `libra-ingest` / 시장 반응 해석 → News / 투자 판단 → Judge / 사업부별 원인 추론 → Report / 재무 데이터 재계산 → Portfolio Service |
 | **News** | 뉴스/매체 검색(한/영) / 매체 cross-check / 시장 반응 관찰(정성) / 섹터 ETF 동향 / 백그라운드 모니터링 + push 트리거 / 임계치 기반 wake-up / **(macro 서브)** 지수/환율/금리 | 공시 원본 → Disclosure / 리포트 분석 → Report / 재무 데이터 해석 → Report / 가격 미래 예측 → Judge 합의 형성 |
 | **Report** | 증권사 리포트 검색/분류 / 목표주가·투자의견·논지 추출 / 사업부별 원인 분해 / 여러 증권사 컨센서스 집계 / fallback 간접 단서 추출 | 뉴스 검색 → News / 공시 원본 → Disclosure / 최종 투자 결정 → Judge / 매크로 → News(macro 서브) |
 | **Profit** | **리밸런싱 plan의 기대수익 시뮬레이션(1m/3m/...) / 샤프비율·최대낙폭 추정 / 시나리오 비교 평가(예: "대기의 기회비용") / 과거 base rate 조회(어닝 쇼크 등) / 팩터 노출도 분석** | 거래 실행 비용 계산 → Cost / 방향성 판단(매수/매도) → News/Report / 플랜 자체 수립 → Judge / 리밸런싱 결정 확정 → Judge |
@@ -303,14 +303,14 @@ class TripwirePrice(BaseModel):
 ### 4.2 Disclosure
 
 > **repo scope note**
-> 아래 도구 표는 Disclosure Agent가 필요로 하는 논리적 입력 능력을 설명한다. 실제 수집, 스케줄링, 소스별 재시도는 `libra-ingest` 또는 별도 데이터 서비스의 책임이며, 현재 `libra-agent` repo는 정규화된 입력 payload를 소비한다.
+> 아래 도구 표는 Disclosure Agent가 필요로 하는 논리적 입력 능력을 설명한다. 실제 OpenDART 호출, 수집 스케줄링, 소스별 재시도는 `libra-ingest` 또는 별도 데이터 서비스의 책임이며, 현재 `libra-agent` repo는 정규화된 disclosure payload와 예정 일정 payload를 소비한다.
 
 | 도구 | 제공처 | 용도 |
 |---|---|---|
-| `opendart.list_disclosures` | OpenDART API | 기간/종목 필터 리스트 |
-| `opendart.get_disclosure_detail` | OpenDART API | 공시 원문 + 첨부 |
-| `opendart.get_company_overview` | OpenDART API | 기업 기본 정보 |
-| `opendart.upcoming_events` | 내부 calendar DB | 예정 일정 (빈손 금지) |
+| `knowledge.disclosure_search` | `libra-ingest` / data service | 기간/종목 필터 disclosure payload |
+| `knowledge.disclosure_detail` | `libra-ingest` / data service | 정규화된 공시 본문 + 첨부 요약 |
+| `knowledge.company_profile` | reference service | 기업 기본 정보 |
+| `knowledge.upcoming_events` | calendar service | 예정 일정 (빈손 금지) |
 
 - shallow: list_disclosures (24h)
 - medium: + get_disclosure_detail (7d)
