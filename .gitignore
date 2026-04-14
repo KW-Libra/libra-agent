@@ -1,0 +1,17 @@
+.venv/
+.playwright-cli/
+src/libra_agent.egg-info/
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+models/
+tools/llama.cpp/
+
+outputs/*
+!outputs/README.md
+
+tmp/*
+!tmp/.gitkeep

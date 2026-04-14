@@ -1,0 +1,50 @@
+{
+  "agent_id": "news",
+  "opinion_id": "news_sample_001",
+  "turn_number": 2,
+  "query_understood": "최근 공시 이후 시장 반응과 관련 뉴스 흐름을 요약한다.",
+  "verdict": "PARTIAL_ANSWER",
+  "evidence": {
+    "sub_role": "company_specific",
+    "company_findings": {
+      "005930": {
+        "sentiment": "positive",
+        "key_headlines": [
+          "HBM 수요 확대 기대가 재부각",
+          "외국인 순매수와 함께 장 초반 강세"
+        ],
+        "market_reaction": "개장 후 주가가 2.1% 상승했다.",
+        "sector_comparison": "동일 섹터 대형주 대비 상대 강세다."
+      }
+    },
+    "macro_findings": {
+      "rates": "미국 금리 변동성은 전주 대비 완화됐다."
+    },
+    "source_reliability": "high",
+    "cross_check_count": 3
+  },
+  "direction": 0.35,
+  "strength": 0.5,
+  "urgency": "watch",
+  "confidence": 0.81,
+  "reasoning_for_judge_agent": "시장 반응은 우호적이지만 단기 과열 여부는 아직 남아 있어 Report 호출 여부를 Judge가 판단하면 된다.",
+  "limits_acknowledged": "뉴스와 가격 반응은 해석 오차가 있어 단독으로 매매 결정을 내리지는 않는다.",
+  "references": [
+    {
+      "agent_id": "disclosure",
+      "opinion_id": "disclosure_sample_001",
+      "relation": "supports"
+    }
+  ],
+  "tools_called": [
+    {
+      "tool_name": "local_knowledge.load_events",
+      "purpose": "News event context",
+      "summary": "Loaded recent market-reaction events for the portfolio."
+    }
+  ],
+  "depth_used": "medium",
+  "focus_tickers": [
+    "005930"
+  ]
+}

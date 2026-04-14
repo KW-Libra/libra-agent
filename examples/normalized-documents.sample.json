@@ -1,0 +1,132 @@
+{
+  "documents": [
+    {
+      "doc_id": "news_0f7d5b60f47892d61bd85f7a",
+      "doc_type": "NEWS",
+      "source_info": {
+        "source_type": "RSS",
+        "source_name": "Yonhap Economy RSS",
+        "source_url": "https://www.yna.co.kr/view/AKR20260402012300002",
+        "publisher": "Yonhap News",
+        "region": "KR"
+      },
+      "raw_content": {
+        "title_raw": "코스피 상승 마감…반도체주 강세",
+        "body_raw": "<p>코스피가 외국인 매수세에 힘입어 상승 마감했다.</p>",
+        "summary_raw": "<p>코스피가 외국인 매수세에 힘입어 상승 마감했다.</p>"
+      },
+      "normalized_content": {
+        "title": "코스피 상승 마감…반도체주 강세",
+        "body": "코스피가 외국인 매수세에 힘입어 상승 마감했다.",
+        "char_count": 30
+      },
+      "language_info": {
+        "lang_final": "ko",
+        "lang_confidence": 0.99
+      },
+      "timing_info": {
+        "published_at": "2026-04-02T06:15:00Z",
+        "collected_at": "2026-04-02T06:16:12Z"
+      },
+      "trace_info": {
+        "raw_hash": "0f7d5b60f47892d61bd85f7a4d88b2b48d3773075fa806412438ffaf40ed667a"
+      }
+    },
+    {
+      "doc_id": "news_63e4c73f49de6ef511dc9ed9",
+      "doc_type": "NEWS",
+      "source_info": {
+        "source_type": "RSS",
+        "source_name": "Reuters World Business",
+        "source_url": "https://www.reuters.com/world/us/futures-rise-ahead-of-fed-comments-2026-04-02/",
+        "publisher": "Reuters",
+        "region": "GLOBAL"
+      },
+      "raw_content": {
+        "title_raw": "Stocks edge up ahead of Federal Reserve remarks",
+        "body_raw": "<div>U.S. equity futures rose modestly before scheduled remarks from Fed officials.</div>",
+        "summary_raw": "<div>U.S. equity futures rose modestly before scheduled remarks from Fed officials.</div>"
+      },
+      "normalized_content": {
+        "title": "Stocks edge up ahead of Federal Reserve remarks",
+        "body": "U.S. equity futures rose modestly before scheduled remarks from Fed officials.",
+        "char_count": 78
+      },
+      "language_info": {
+        "lang_final": "en",
+        "lang_confidence": 0.998
+      },
+      "timing_info": {
+        "published_at": "2026-04-02T10:05:00Z",
+        "collected_at": "2026-04-02T10:05:31Z"
+      },
+      "trace_info": {
+        "raw_hash": "63e4c73f49de6ef511dc9ed9c80f849f52d43e995c35095ce4d05ca71ea3f903"
+      }
+    },
+    {
+      "doc_id": "disclosure_a4f1ce5e909d9657bfb61c16",
+      "doc_type": "DISCLOSURE",
+      "source_info": {
+        "source_type": "API",
+        "source_name": "DART Open API",
+        "source_url": "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260402000123",
+        "publisher": "Financial Supervisory Service",
+        "region": "KR"
+      },
+      "raw_content": {
+        "title_raw": "분기보고서",
+        "body_raw": "Company: 삼성전자\nReport Title: 분기보고서\nReceipt Date: 20260402\nDisclosure URL: https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260402000123\nFiler Name: 삼성전자",
+        "summary_raw": "삼성전자"
+      },
+      "normalized_content": {
+        "title": "분기보고서",
+        "body": "Company: 삼성전자\nReport Title: 분기보고서\nReceipt Date: 20260402\nDisclosure URL: https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260402000123\nFiler Name: 삼성전자",
+        "char_count": 154
+      },
+      "language_info": {
+        "lang_final": "mixed",
+        "lang_confidence": 0.63
+      },
+      "timing_info": {
+        "published_at": "2026-04-02T00:00:00Z",
+        "collected_at": "2026-04-02T00:01:45Z"
+      },
+      "trace_info": {
+        "raw_hash": "a4f1ce5e909d9657bfb61c162b452695b2c4a9a1fd33e2be911098fc161d6574"
+      }
+    },
+    {
+      "doc_id": "report_b7c1dcff9cd53a56976f3490",
+      "doc_type": "REPORT",
+      "source_info": {
+        "source_type": "PDF_PARSE",
+        "source_name": "Broker PDF Report",
+        "source_url": "https://research.example.com/report-20260402.pdf",
+        "publisher": "Example Securities",
+        "region": "US"
+      },
+      "raw_content": {
+        "title_raw": "Semiconductor Outlook 2Q26",
+        "body_raw": "Semiconductor Outlook 2Q26\nAnalyst: Jane Kim\nCompany: Samsung Electronics\nSummary: Memory pricing is improving on AI-driven demand.",
+        "summary_raw": "Memory pricing is improving on AI-driven demand."
+      },
+      "normalized_content": {
+        "title": "Semiconductor Outlook 2Q26",
+        "body": "Semiconductor Outlook 2Q26\nAnalyst: Jane Kim\nCompany: Samsung Electronics\nSummary: Memory pricing is improving on AI-driven demand.",
+        "char_count": 131
+      },
+      "language_info": {
+        "lang_final": "en",
+        "lang_confidence": 0.995
+      },
+      "timing_info": {
+        "published_at": "2026-04-02T11:00:00Z",
+        "collected_at": "2026-04-02T11:00:19Z"
+      },
+      "trace_info": {
+        "raw_hash": "b7c1dcff9cd53a56976f3490c1cc7107cff470db587f45229d4fe12369f8eb52"
+      }
+    }
+  ]
+}

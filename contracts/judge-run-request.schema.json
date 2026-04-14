@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://libra.local/contracts/judge-run-request.schema.json",
+  "title": "Judge Run Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["query", "portfolio"],
+  "properties": {
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "description": "User instruction or portfolio question for the Judge."
+    },
+    "portfolio": {
+      "$ref": "#/$defs/portfolioSnapshot"
+    },
+    "knowledge_sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "events": {
+          "type": "string",
+          "description": "Path or identifier for the events payload."
+        },
+        "normalized_documents": {
+          "type": "string",
+          "description": "Path or identifier for the normalized documents payload."
+        },
+        "enriched_documents": {
+          "type": "string",
+          "description": "Optional fallback path or identifier for enriched documents."
+        }
+      },
+      "description": "Local knowledge inputs that will be staged before the run."
+    },
+    "depth": {
+      "type": "string",
+      "enum": ["shallow", "medium", "deep"],
+      "default": "medium"
+    },
+    "trigger": {
+      "type": "string",
+      "enum": ["pull", "push"],
+      "default": "pull"
+    },
+    "trigger_event": {
+      "anyOf": [
+        {
+          "$ref": "push-trigger-event.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "deadline_seconds": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional self-imposed time limit for a run."
+    },
+    "thread_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional LangGraph thread id for checkpointed runs."
+    },
+    "enable_human_interrupts": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "$defs": {
+    "portfolioSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generated_at", "holdings"],
+      "properties": {
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "holdings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/portfolioHolding"
+          }
+        },
+        "total_value_krw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cash_weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "user_preferences": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "portfolioHolding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ticker", "company_name", "weight"],
+      "properties": {
+        "ticker": {
+          "type": "string",
+          "minLength": 1
+        },
+        "company_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "shares": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_price": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

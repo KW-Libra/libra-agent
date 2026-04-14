@@ -1,0 +1,40 @@
+{
+  "agent_id": "cost",
+  "opinion_id": "cost_sample_001",
+  "turn_number": 5,
+  "query_understood": "후보 리밸런싱 초안의 거래비용과 실행 마찰을 평가한다.",
+  "verdict": "DIRECT_ANSWER",
+  "evidence": {
+    "mode": "trade_cost",
+    "trade_cost": {
+      "rebalance_plan": {
+        "005930": 0.05,
+        "000660": -0.05
+      },
+      "commission_krw": 30000.0,
+      "tax_krw": 180000.0,
+      "estimated_slippage_bp": 11.0,
+      "spread_state_bp": 7.0,
+      "total_friction_bp": 37.5
+    }
+  },
+  "direction": 0.0,
+  "strength": 0.0,
+  "urgency": "watch",
+  "confidence": 0.58,
+  "reasoning_for_judge_agent": "총 마찰비용이 꽤 높아 실행 방식이나 거래 한도 조정이 필요하다.",
+  "limits_acknowledged": "Cost 평가는 실시간 호가창이나 실제 브로커 수수료를 반영하지 않는 휴리스틱이다.",
+  "references": [],
+  "tools_called": [
+    {
+      "tool_name": "local_cost.heuristic_trade_cost",
+      "purpose": "Estimate commission, tax, spread, and slippage",
+      "summary": "Estimated trade friction for the candidate rebalance plan."
+    }
+  ],
+  "depth_used": "medium",
+  "focus_tickers": [
+    "000660",
+    "005930"
+  ]
+}

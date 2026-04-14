@@ -1,0 +1,44 @@
+{
+  "agent_id": "profit",
+  "opinion_id": "profit_sample_001",
+  "turn_number": 4,
+  "query_understood": "후보 리밸런싱 초안의 기대수익과 위험을 평가한다.",
+  "verdict": "DIRECT_ANSWER",
+  "evidence": {
+    "mode": "plan_simulation",
+    "plan_simulation": {
+      "rebalance_plan": {
+        "005930": 0.05,
+        "000660": -0.05
+      },
+      "ticker_signals": {
+        "005930": 0.42,
+        "000660": -0.11
+      },
+      "expected_return_1m": 1.12,
+      "expected_return_3m": 1.84,
+      "sharpe_ratio": 0.61,
+      "max_drawdown": -1.47,
+      "recommendation_text": "Heuristic v1 simulation suggests modest upside relative to trade size."
+    }
+  },
+  "direction": 0.28,
+  "strength": 0.4,
+  "urgency": "scheduled",
+  "confidence": 0.58,
+  "reasoning_for_judge_agent": "초안은 기대수익 대비 위험이 나쁘지 않지만 Cost 검토 없이 실행 판단을 내리면 안 된다.",
+  "limits_acknowledged": "Profit 평가는 휴리스틱 기반이며 캘리브레이션된 시장 시뮬레이터는 아니다.",
+  "references": [],
+  "tools_called": [
+    {
+      "tool_name": "local_profit.heuristic_plan_simulation",
+      "purpose": "Estimate directional payoff of the candidate rebalance plan",
+      "summary": "Computed heuristic plan metrics for two position changes."
+    }
+  ],
+  "depth_used": "medium",
+  "focus_tickers": [
+    "000660",
+    "005930"
+  ]
+}

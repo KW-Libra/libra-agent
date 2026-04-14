@@ -1,0 +1,539 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://libra.local/contracts/judge-run-result.schema.json",
+  "title": "Judge Run Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["model", "query", "portfolio", "agent_responses", "decision", "knowledge_sources", "runtime"],
+  "properties": {
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "query": {
+      "type": "string",
+      "minLength": 1
+    },
+    "portfolio": {
+      "$ref": "judge-run-request.schema.json#/$defs/portfolioSnapshot"
+    },
+    "agent_responses": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/agentResponse"
+      }
+    },
+    "decision": {
+      "$ref": "#/$defs/judgeDecision"
+    },
+    "knowledge_sources": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Source paths or identifiers used to stage the run."
+    },
+    "runtime": {
+      "$ref": "#/$defs/runtimeState"
+    },
+    "state_record": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/stateRecord"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional local persistence metadata returned by the CLI/store layer."
+    }
+  },
+  "$defs": {
+    "agentResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent_id",
+        "opinion_id",
+        "turn_number",
+        "query_understood",
+        "verdict",
+        "evidence",
+        "direction",
+        "strength",
+        "urgency",
+        "confidence",
+        "reasoning_for_judge_agent",
+        "depth_used",
+        "focus_tickers"
+      ],
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "opinion_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turn_number": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "query_understood": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string",
+          "enum": ["DIRECT_ANSWER", "PARTIAL_ANSWER", "DIRECT_ANSWER_UNAVAILABLE", "QUIET"]
+        },
+        "evidence": {
+          "type": "object"
+        },
+        "direction": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "strength": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "urgency": {
+          "type": "string",
+          "enum": ["immediate", "scheduled", "watch", "defer"]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "reasoning_for_judge_agent": {
+          "type": "string"
+        },
+        "limits_acknowledged": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reference"
+          }
+        },
+        "tools_called": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/toolCall"
+          }
+        },
+        "depth_used": {
+          "type": "string"
+        },
+        "focus_tickers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_id", "opinion_id", "relation"],
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "opinion_id": {
+          "type": "string"
+        },
+        "relation": {
+          "type": "string"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "toolCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool_name", "purpose", "summary"],
+      "properties": {
+        "tool_name": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      }
+    },
+    "userNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "body"],
+      "properties": {
+        "level": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "action_required": {
+          "type": "boolean"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "estimated_followup": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sent_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "triggerEvent": {
+      "$ref": "push-trigger-event.schema.json"
+    },
+    "decisionTraceNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["turn_number", "phase", "actor", "query", "summary"],
+      "properties": {
+        "turn_number": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "phase": {
+          "type": "string",
+          "enum": ["information_gathering", "deliberation", "consensus", "decision"]
+        },
+        "actor": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "context": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reference"
+          }
+        },
+        "tools_called": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/toolCall"
+          }
+        }
+      }
+    },
+    "judgeDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "summary", "confidence", "urgency", "decision_trace"],
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": ["HOLD", "DEFER", "USER_DECISION_REQUIRED", "REBALANCE"]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "urgency": {
+          "type": "string",
+          "enum": ["immediate", "scheduled", "watch", "defer"]
+        },
+        "called_agents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "skipped_agents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "skip_rationale": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "candidate_rebalance_plan": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": -1,
+            "maximum": 1
+          }
+        },
+        "decision_trace": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/decisionTraceNode"
+          }
+        },
+        "reasoning": {
+          "type": "string"
+        },
+        "user_notification": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/userNotification"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "follow_up_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "feedback_checkpoint": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "consensus_score": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "divergence_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "needs_trade_evaluation": {
+          "type": "boolean"
+        },
+        "trigger": {
+          "type": "string"
+        },
+        "trigger_event": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/triggerEvent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deadline_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "elapsed_seconds": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "auto_safeguards": {
+          "type": "object"
+        },
+        "notification_log": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/userNotification"
+          }
+        }
+      }
+    },
+    "runtimeState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engine", "thread_id", "checkpoint_path", "interrupted", "resume_required"],
+      "properties": {
+        "engine": {
+          "type": "string"
+        },
+        "thread_id": {
+          "type": "string"
+        },
+        "checkpoint_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "interrupted": {
+          "type": "boolean"
+        },
+        "resume_required": {
+          "type": "boolean"
+        },
+        "interrupts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "value"],
+            "properties": {
+              "id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "value": {}
+            }
+          }
+        },
+        "human_response": {}
+      }
+    },
+    "stateRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_path", "follow_up_queue", "feedback_queue"],
+      "properties": {
+        "run_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "follow_up_queue": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "feedback_queue": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

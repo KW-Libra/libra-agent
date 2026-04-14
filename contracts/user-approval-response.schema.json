@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://libra.local/contracts/user-approval-response.schema.json",
+  "title": "User Approval Response",
+  "type": "object",
+  "required": ["approved"],
+  "properties": {
+    "approved": {
+      "type": "boolean",
+      "description": "Whether the user approved the recommended action."
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["APPROVE", "REJECT", "REVISE", "DEFER"]
+    },
+    "note": {
+      "type": "string",
+      "description": "Freeform user comment, override instruction, or rationale."
+    },
+    "override_decision": {
+      "type": "string",
+      "enum": ["HOLD", "DEFER", "USER_DECISION_REQUIRED", "REBALANCE"]
+    },
+    "override_plan": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number",
+        "minimum": -1,
+        "maximum": 1
+      },
+      "description": "Optional user-specified rebalance deltas keyed by ticker."
+    },
+    "effective_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "responder": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Optional client-side metadata for audit or UI state."
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,63 @@
+{
+  "agent_id": "report",
+  "opinion_id": "report_sample_001",
+  "turn_number": 3,
+  "query_understood": "증권사 리포트와 컨센서스 변화를 요약한다.",
+  "verdict": "PARTIAL_ANSWER",
+  "evidence": {
+    "coverage_reports_count": 2,
+    "preview_reports_count": 1,
+    "items": [
+      {
+        "broker": "Broker A",
+        "published_at": "2026-04-03T08:10:00+09:00",
+        "report_type": "coverage",
+        "key_thesis": "서버와 HBM 중심 이익 체력이 회복되고 있어 하반기 추정치 상향 가능성이 있다.",
+        "matched_holdings": [
+          "005930"
+        ],
+        "rating": "buy",
+        "target_price": 98000.0
+      },
+      {
+        "broker": "Broker B",
+        "published_at": "2026-04-04T07:40:00+09:00",
+        "report_type": "preview",
+        "key_thesis": "단기 기대치가 높아 실적 발표 전 변동성은 열어둘 필요가 있다.",
+        "matched_holdings": [
+          "005930"
+        ],
+        "rating": "hold",
+        "target_price": 91000.0
+      }
+    ],
+    "consensus": {
+      "direction": "slightly_up",
+      "note": "상향 의견이 우세하지만 단기 과열 우려도 함께 존재한다."
+    }
+  },
+  "direction": 0.18,
+  "strength": 0.42,
+  "urgency": "scheduled",
+  "confidence": 0.74,
+  "reasoning_for_judge_agent": "리포트 해석은 완전한 합의가 아니므로 Judge가 보유 또는 소폭 리밸런싱 초안 여부를 결정해야 한다.",
+  "limits_acknowledged": "리포트 커버리지가 부족한 종목에는 간접 단서만 제공할 수 있다.",
+  "references": [
+    {
+      "agent_id": "news",
+      "opinion_id": "news_sample_001",
+      "relation": "supports"
+    }
+  ],
+  "tools_called": [
+    {
+      "tool_name": "local_knowledge.load_documents",
+      "purpose": "Report document context",
+      "summary": "Loaded broker-style report documents from the normalized cache."
+    }
+  ],
+  "depth_used": "medium",
+  "focus_tickers": [
+    "005930"
+  ]
+}
