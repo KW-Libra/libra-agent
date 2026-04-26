@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .libra.config import add_backend_arguments
 from .libra.llm_clients import open_chat_client_from_args
+from .libra.portfolio_sources import KIS_DEFAULT_CONFIG_PATH, build_kis_portfolio_snapshot
 from .libra_models import PortfolioSnapshot, TriggerEvent
 from .libra_runtime import JudgeOrchestrator, LocalKnowledgeBase
 from .libra_store import LibraDecisionStore
@@ -73,6 +74,23 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the LIBRA MVP with a local LLM backend")
     parser.add_argument("--query", help="User question or instruction for LIBRA")
     parser.add_argument("--portfolio", help="Path to a portfolio snapshot JSON file")
+    parser.add_argument(
+        "--portfolio-source",
+        default="file",
+        choices=("file", "kis"),
+        help="Portfolio input source. Use 'kis' to bootstrap holdings directly from Korea Investment Open API.",
+    )
+    parser.add_argument(
+        "--kis-config",
+        default=str(KIS_DEFAULT_CONFIG_PATH),
+        help="Path to kis_devlp.yaml used for KIS portfolio bootstrap",
+    )
+    parser.add_argument("--kis-env", default="real", choices=("real", "demo"), help="KIS environment for portfolio bootstrap")
+    parser.add_argument("--kis-app-key", help="Override KIS app key for portfolio bootstrap")
+    parser.add_argument("--kis-app-secret", help="Override KIS app secret for portfolio bootstrap")
+    parser.add_argument("--kis-account-no", help="Override KIS account number (first 8 digits)")
+    parser.add_argument("--kis-product-code", help="Override KIS product code (last 2 digits)")
+    parser.add_argument("--kis-user-agent", help="Override KIS User-Agent header")
     parser.add_argument("--batch-dir", help="Local knowledge directory containing events/normalized documents")
     parser.add_argument("--events", help="Path to events.json or events.jsonl")
     parser.add_argument("--normalized-documents", help="Path to normalized_documents.json or normalized_documents.jsonl")
@@ -137,7 +155,7 @@ def _validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
         return "resume"
     if not args.query:
         parser.error("--query is required unless --resume-json is used.")
-    if not args.portfolio:
+    if args.portfolio_source == "file" and not args.portfolio:
         parser.error("--portfolio is required unless --resume-json is used.")
     return "run"
 
@@ -165,7 +183,7 @@ def main() -> None:
             )
         else:
             events_path, normalized_path, enriched_path = resolve_inputs(args)
-            portfolio = _load_portfolio(args.portfolio)
+            portfolio = _load_portfolio(args.portfolio) if args.portfolio_source == "file" else build_kis_portfolio_snapshot(args)
             trigger_event = _build_trigger_event(args)
             knowledge_base = LocalKnowledgeBase.from_files(
                 events_path=events_path,

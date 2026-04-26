@@ -2,7 +2,7 @@
 
 ## Decision
 
-- `libra-api`: Spring Boot backend repository
+- `libra-backend`: Spring Boot backend repository
 - `libra-agent`: Python LangGraph decision engine repository
 
 Do not move Judge orchestration into Spring Boot.
@@ -23,7 +23,7 @@ Rewriting that core into Spring Boot now would slow the team down and blur owner
 
 ## Repository Responsibilities
 
-### `libra-api` (Spring Boot)
+### `libra-backend` (Spring Boot)
 
 - user auth, session, tenant, RBAC
 - portfolio CRUD
@@ -53,11 +53,11 @@ Rewriting that core into Spring Boot now would slow the team down and blur owner
 
 ## Call Direction
 
-- `libra-web -> libra-api`
-- `libra-api -> libra-agent`
-- `libra-api -> libra-ingest`
+- `libra-frontend -> libra-backend`
+- `libra-backend -> libra-agent`
+- `libra-backend -> libra-ingest`
 
-`libra-web` does not call the agent directly.
+`libra-frontend` does not call the agent directly.
 
 ## Recommended Integration Shape
 
@@ -76,7 +76,7 @@ CLI subprocess coupling is acceptable for local development, but it should not b
 
 ## Spring Boot Repo Structure
 
-Recommended package direction for `libra-api`:
+Recommended package direction for `libra-backend`:
 
 ```text
 src/main/java/com/libra/api
@@ -129,9 +129,9 @@ That means:
 
 ## Team Split
 
-- backend team: `libra-api` Spring Boot, persistence, scheduler, execution, auth
+- backend team: `libra-backend` Spring Boot, persistence, scheduler, execution, auth
 - agent team: `libra-agent` Judge and sub-agents
 - ingest team: `libra-ingest` collectors and normalization
-- frontend team: `libra-web`
+- frontend team: `libra-frontend`
 
 This keeps each team working in parallel without mixing framework concerns.

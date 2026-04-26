@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Any, Literal
 
 
-BackendName = Literal["ollama", "llama_cpp"]
+BackendName = Literal["ollama", "llama_cpp", "anthropic"]
 
 DEFAULT_OLLAMA_MODEL = "dolphin-llama3:8b"
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
+DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-5"
+DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
+DEFAULT_ANTHROPIC_MAX_TOKENS = 4096
 DEFAULT_LLAMA_SERVER_PATH = Path("tools") / "llama.cpp" / "b8783" / "bin" / "llama-server.exe"
 DEFAULT_LLAMA_MODEL_PATH = (
     Path("models") / "supergemma4-26b" / "supergemma4-26b-abliterated-multimodal-Q4_K_M.gguf"
@@ -52,7 +57,18 @@ class LlamaCppBackendConfig:
         return self.model_alias or self.model_path.stem
 
 
-LibraBackendConfig = OllamaBackendConfig | LlamaCppBackendConfig
+@dataclass(slots=True, frozen=True)
+class AnthropicBackendConfig:
+    backend: Literal["anthropic"] = "anthropic"
+    api_key: str = ""
+    model: str = DEFAULT_ANTHROPIC_MODEL
+    base_url: str = DEFAULT_ANTHROPIC_BASE_URL
+    anthropic_version: str = DEFAULT_ANTHROPIC_VERSION
+    max_tokens: int = DEFAULT_ANTHROPIC_MAX_TOKENS
+    timeout_seconds: float = 180.0
+
+
+LibraBackendConfig = OllamaBackendConfig | LlamaCppBackendConfig | AnthropicBackendConfig
 
 
 def add_backend_arguments(
@@ -64,11 +80,36 @@ def add_backend_arguments(
     parser.add_argument(
         "--backend",
         default=default_backend,
-        choices=("ollama", "llama_cpp"),
+        choices=("ollama", "llama_cpp", "anthropic"),
         help=backend_help,
     )
     parser.add_argument("--model", default=DEFAULT_OLLAMA_MODEL, help="Ollama model name")
     parser.add_argument("--ollama-host", default=DEFAULT_OLLAMA_HOST, help="Ollama API host")
+    parser.add_argument(
+        "--anthropic-api-key",
+        help="Anthropic API key. Defaults to ANTHROPIC_API_KEY.",
+    )
+    parser.add_argument(
+        "--anthropic-model",
+        default=None,
+        help="Claude model name. Defaults to ANTHROPIC_MODEL or LIBRA_ANTHROPIC_MODEL.",
+    )
+    parser.add_argument(
+        "--anthropic-base-url",
+        default=DEFAULT_ANTHROPIC_BASE_URL,
+        help="Anthropic API base URL",
+    )
+    parser.add_argument(
+        "--anthropic-version",
+        default=DEFAULT_ANTHROPIC_VERSION,
+        help="Anthropic API version header",
+    )
+    parser.add_argument(
+        "--anthropic-max-tokens",
+        type=int,
+        default=DEFAULT_ANTHROPIC_MAX_TOKENS,
+        help="Maximum output tokens for Claude responses",
+    )
     parser.add_argument(
         "--llama-server-path",
         default=str(DEFAULT_LLAMA_SERVER_PATH),
@@ -107,6 +148,21 @@ def backend_config_from_args(args: Any) -> LibraBackendConfig:
             model=str(getattr(args, "model", DEFAULT_OLLAMA_MODEL)),
             host=str(getattr(args, "ollama_host", DEFAULT_OLLAMA_HOST)),
         )
+    if backend == "anthropic":
+        api_key = str(getattr(args, "anthropic_api_key", "") or os.getenv("ANTHROPIC_API_KEY", ""))
+        model = (
+            getattr(args, "anthropic_model", None)
+            or os.getenv("LIBRA_ANTHROPIC_MODEL")
+            or os.getenv("ANTHROPIC_MODEL")
+            or DEFAULT_ANTHROPIC_MODEL
+        )
+        return AnthropicBackendConfig(
+            api_key=api_key,
+            model=str(model),
+            base_url=str(getattr(args, "anthropic_base_url", DEFAULT_ANTHROPIC_BASE_URL)),
+            anthropic_version=str(getattr(args, "anthropic_version", DEFAULT_ANTHROPIC_VERSION)),
+            max_tokens=int(getattr(args, "anthropic_max_tokens", DEFAULT_ANTHROPIC_MAX_TOKENS)),
+        )
     if backend == "llama_cpp":
         raw_mmproj = getattr(args, "llama_mmproj_path", None)
         mmproj = str(raw_mmproj).strip() if raw_mmproj is not None else ""
@@ -121,5 +177,70 @@ def backend_config_from_args(args: Any) -> LibraBackendConfig:
             ctx_size=int(getattr(args, "llama_ctx", DEFAULT_LLAMA_CTX)),
             gpu_layers=str(getattr(args, "llama_gpu_layers", DEFAULT_LLAMA_GPU_LAYERS)),
             launch_server=not bool(getattr(args, "llama_no_launch", False)),
+        )
+    raise ValueError(f"Unsupported LIBRA backend: {backend}")
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return int(value)
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return float(value)
+
+
+def backend_config_from_env(*, default_backend: BackendName = "llama_cpp") -> LibraBackendConfig:
+    backend = (
+        os.getenv("LIBRA_LLM_PROVIDER")
+        or os.getenv("LIBRA_BACKEND")
+        or os.getenv("LLM_PROVIDER")
+        or default_backend
+    ).strip().lower()
+    if backend == "ollama":
+        return OllamaBackendConfig(
+            model=os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
+            host=os.getenv("OLLAMA_HOST", DEFAULT_OLLAMA_HOST),
+            timeout_seconds=_env_float("LIBRA_LLM_TIMEOUT_SECONDS", 180.0),
+        )
+    if backend == "anthropic":
+        return AnthropicBackendConfig(
+            api_key=os.getenv("ANTHROPIC_API_KEY", ""),
+            model=(
+                os.getenv("LIBRA_ANTHROPIC_MODEL")
+                or os.getenv("ANTHROPIC_MODEL")
+                or DEFAULT_ANTHROPIC_MODEL
+            ),
+            base_url=os.getenv("ANTHROPIC_BASE_URL", DEFAULT_ANTHROPIC_BASE_URL),
+            anthropic_version=os.getenv("ANTHROPIC_VERSION", DEFAULT_ANTHROPIC_VERSION),
+            max_tokens=_env_int("ANTHROPIC_MAX_TOKENS", DEFAULT_ANTHROPIC_MAX_TOKENS),
+            timeout_seconds=_env_float("LIBRA_LLM_TIMEOUT_SECONDS", 180.0),
+        )
+    if backend == "llama_cpp":
+        return LlamaCppBackendConfig(
+            server_path=Path(os.getenv("LIBRA_LLAMA_SERVER_PATH", str(DEFAULT_LLAMA_SERVER_PATH))),
+            model_path=Path(os.getenv("LIBRA_LLAMA_MODEL_PATH", str(DEFAULT_LLAMA_MODEL_PATH))),
+            mmproj_path=Path(os.getenv("LIBRA_LLAMA_MMPROJ_PATH", str(DEFAULT_LLAMA_MMPROJ_PATH)))
+            if os.getenv("LIBRA_LLAMA_MMPROJ_PATH", str(DEFAULT_LLAMA_MMPROJ_PATH)).strip()
+            else None,
+            model_alias=os.getenv("LIBRA_LLAMA_ALIAS") or "supergemma4-26b",
+            host=os.getenv("LIBRA_LLAMA_HOST", DEFAULT_LLAMA_HOST),
+            port=_env_int("LIBRA_LLAMA_PORT", DEFAULT_LLAMA_PORT),
+            ctx_size=_env_int("LIBRA_LLAMA_CTX", DEFAULT_LLAMA_CTX),
+            gpu_layers=os.getenv("LIBRA_LLAMA_GPU_LAYERS", DEFAULT_LLAMA_GPU_LAYERS),
+            timeout_seconds=_env_float("LIBRA_LLM_TIMEOUT_SECONDS", 300.0),
+            launch_server=_env_bool("LIBRA_LLAMA_LAUNCH_SERVER", False),
         )
     raise ValueError(f"Unsupported LIBRA backend: {backend}")

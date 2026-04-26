@@ -1,0 +1,15 @@
+{$LIBRA_DOMAIN} {
+	encode gzip
+
+	handle /health {
+		reverse_proxy {$LIBRA_UPSTREAM}
+	}
+
+	handle /v1/* {
+		reverse_proxy {$LIBRA_UPSTREAM}
+	}
+
+	handle {
+		respond "LIBRA service is running" 200
+	}
+}

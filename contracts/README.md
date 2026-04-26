@@ -1,8 +1,8 @@
 # Contracts
 
-This directory contains versioned JSON Schemas for payloads exchanged by `libra-agent` and `libra-api`.
+This directory contains versioned JSON Schemas for payloads exchanged by `libra-agent` and `libra-backend`.
 
-`libra-api` is expected to be implemented in Spring Boot, so these schemas act as the language-neutral contract between Java DTOs and Python runtime models.
+`libra-backend` is expected to be implemented in Spring Boot, so these schemas act as the language-neutral contract between Java DTOs and Python runtime models.
 
 Current contracts:
 

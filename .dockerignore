@@ -1,0 +1,16 @@
+.git
+.venv
+.playwright-cli
+.env
+.env.*
+!.env.*.example
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+src/libra_agent.egg-info
+models
+tools/llama.cpp
+outputs
+tmp
+tests

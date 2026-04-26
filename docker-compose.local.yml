@@ -1,0 +1,134 @@
+name: ${COMPOSE_PROJECT_NAME:-libra-local}
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: libra-mysql
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --skip-name-resolve
+    environment:
+      TZ: UTC
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    ports:
+      - "${MYSQL_PORT:-3307}:3306"
+    volumes:
+      - type: bind
+        source: ${LIBRA_DOCKER_DATA_ROOT}/mysql
+        target: /var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - libra-local
+
+  minio:
+    image: minio/minio:latest
+    container_name: libra-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      TZ: UTC
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - type: bind
+        source: ${LIBRA_DOCKER_DATA_ROOT}/minio
+        target: /data
+    networks:
+      - libra-local
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: libra-minio-init
+    restart: "no"
+    depends_on:
+      - minio
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        until mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
+        do sleep 2; done &&
+        mc mb --ignore-existing local/${MINIO_BUCKET}
+    networks:
+      - libra-local
+
+  api:
+    build:
+      context: ../libra-backend
+      dockerfile: Dockerfile
+    container_name: libra-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      TZ: UTC
+      LIBRA_KIS_REAL_APP_KEY: ${LIBRA_KIS_REAL_APP_KEY}
+      LIBRA_KIS_REAL_APP_SECRET: ${LIBRA_KIS_REAL_APP_SECRET}
+      LIBRA_KIS_REAL_ACCOUNT_NO: ${LIBRA_KIS_REAL_ACCOUNT_NO}
+      LIBRA_KIS_REAL_PRODUCT_CODE: ${LIBRA_KIS_REAL_PRODUCT_CODE}
+      LIBRA_KIS_DEMO_APP_KEY: ${LIBRA_KIS_DEMO_APP_KEY}
+      LIBRA_KIS_DEMO_APP_SECRET: ${LIBRA_KIS_DEMO_APP_SECRET}
+      LIBRA_KIS_DEMO_ACCOUNT_NO: ${LIBRA_KIS_DEMO_ACCOUNT_NO}
+      LIBRA_KIS_DEMO_PRODUCT_CODE: ${LIBRA_KIS_DEMO_PRODUCT_CODE}
+      LIBRA_KIS_USER_AGENT: LIBRA-Docker-Local/1.0
+      LIBRA_DB_HOST: mysql
+      LIBRA_DB_PORT: 3306
+      LIBRA_DB_NAME: ${MYSQL_DATABASE}
+      LIBRA_DB_USER: ${MYSQL_USER}
+      LIBRA_DB_PASSWORD: ${MYSQL_PASSWORD}
+      LIBRA_S3_ENDPOINT: http://minio:9000
+      LIBRA_S3_BUCKET: ${MINIO_BUCKET}
+      LIBRA_S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      LIBRA_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${LIBRA_API_PORT:-8080}:8080"
+    networks:
+      - libra-local
+
+  agent-cli:
+    profiles: ["manual"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: libra-agent-cli
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_started
+      api:
+        condition: service_started
+    environment:
+      TZ: UTC
+      PYTHONUTF8: "1"
+    entrypoint: ["python", "-m", "libra_agent.libra_cli"]
+    command:
+      - --help
+    volumes:
+      - type: bind
+        source: ${LIBRA_DOCKER_DATA_ROOT}/agent-state
+        target: /app/outputs
+      - type: bind
+        source: ./models
+        target: /models
+        read_only: true
+    networks:
+      - libra-local
+
+networks:
+  libra-local:
+    driver: bridge

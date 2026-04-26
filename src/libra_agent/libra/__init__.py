@@ -8,11 +8,13 @@ from .agents import (
     build_default_agent_bundle,
 )
 from .config import (
+    AnthropicBackendConfig,
     LlamaCppBackendConfig,
     LibraBackendConfig,
     OllamaBackendConfig,
     add_backend_arguments,
     backend_config_from_args,
+    backend_config_from_env,
 )
 from .llm_clients import (
     ChatClientError,
@@ -20,10 +22,12 @@ from .llm_clients import (
     create_chat_client,
     open_chat_client,
     open_chat_client_from_args,
+    open_chat_client_from_env,
 )
 
 __all__ = [
     "AgentBundle",
+    "AnthropicBackendConfig",
     "CostAgent",
     "DisclosureAgent",
     "LlamaCppBackendConfig",
@@ -36,8 +40,10 @@ __all__ = [
     "ChatClientProtocol",
     "add_backend_arguments",
     "backend_config_from_args",
+    "backend_config_from_env",
     "build_default_agent_bundle",
     "create_chat_client",
     "open_chat_client",
     "open_chat_client_from_args",
+    "open_chat_client_from_env",
 ]

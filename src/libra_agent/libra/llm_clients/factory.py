@@ -3,19 +3,31 @@ from __future__ import annotations
 from contextlib import ExitStack
 from typing import Any
 
+from libra_agent.anthropic_client import AnthropicChatClient
 from libra_agent.llama_cpp_client import LlamaCppServerClient
 from libra_agent.ollama_client import OllamaChatClient
 
 from ..config import (
+    AnthropicBackendConfig,
     LlamaCppBackendConfig,
     LibraBackendConfig,
     OllamaBackendConfig,
     backend_config_from_args,
+    backend_config_from_env,
 )
 from .base import ChatClientProtocol
 
 
 def create_chat_client(config: LibraBackendConfig) -> Any:
+    if isinstance(config, AnthropicBackendConfig):
+        return AnthropicChatClient(
+            api_key=config.api_key,
+            model=config.model,
+            base_url=config.base_url,
+            anthropic_version=config.anthropic_version,
+            max_tokens=config.max_tokens,
+            timeout_seconds=config.timeout_seconds,
+        )
     if isinstance(config, OllamaBackendConfig):
         return OllamaChatClient(
             model=config.model,
@@ -49,3 +61,7 @@ def open_chat_client(config: LibraBackendConfig, *, stack: ExitStack) -> ChatCli
 
 def open_chat_client_from_args(args: Any, *, stack: ExitStack) -> ChatClientProtocol:
     return open_chat_client(backend_config_from_args(args), stack=stack)
+
+
+def open_chat_client_from_env(*, stack: ExitStack) -> ChatClientProtocol:
+    return open_chat_client(backend_config_from_env(), stack=stack)

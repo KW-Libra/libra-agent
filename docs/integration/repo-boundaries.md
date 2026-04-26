@@ -4,8 +4,8 @@
 
 - `libra-ingest`
 - `libra-agent`
-- `libra-api` (Spring Boot)
-- `libra-web`
+- `libra-backend` (Spring Boot)
+- `libra-frontend`
 
 ## Ownership
 
@@ -17,7 +17,7 @@
 - decision trace generation
 - runtime-side decision persistence
 
-### `libra-api`
+### `libra-backend`
 
 - Spring Boot product backend
 - user auth and tenant model
@@ -37,7 +37,7 @@
 - ingest-side schedules and source-specific retries
 - producing `events` and `normalized_documents` payloads for downstream systems
 
-### `libra-web`
+### `libra-frontend`
 
 - dashboard
 - portfolio settings
@@ -48,17 +48,17 @@
 
 ## Call Direction
 
-- `libra-web -> libra-api`
-- `libra-api -> libra-agent`
-- `libra-api -> libra-ingest`
+- `libra-frontend -> libra-backend`
+- `libra-backend -> libra-agent`
+- `libra-backend -> libra-ingest`
 
-`libra-web` should not call `libra-agent` directly.
+`libra-frontend` should not call `libra-agent` directly.
 
 `libra-agent` should not absorb product backend responsibilities. Judge orchestration stays in Python; Spring Boot owns application-facing workflows.
 
 ## Shared Contract Rule
 
-Anything exchanged between `libra-agent` and `libra-api` should be versioned under `contracts/`.
+Anything exchanged between `libra-agent` and `libra-backend` should be versioned under `contracts/`.
 
 Recommended first contract files:
 

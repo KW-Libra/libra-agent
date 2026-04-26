@@ -5,7 +5,7 @@ from typing import Any, Mapping
 
 import httpx
 
-from .libra.llm_clients.base import ChatClientError
+from .errors import ChatClientError
 
 
 class OllamaClientError(ChatClientError):

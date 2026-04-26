@@ -1,0 +1,93 @@
+name: ${COMPOSE_PROJECT_NAME:-libra-prod}
+
+services:
+  agent:
+    image: ${LIBRA_AGENT_IMAGE:-libra-agent:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: libra-agent
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Seoul
+      PYTHONUTF8: "1"
+      LIBRA_LLM_PROVIDER: ${LIBRA_LLM_PROVIDER:-anthropic}
+      LIBRA_ANTHROPIC_MODEL: ${LIBRA_ANTHROPIC_MODEL:-claude-sonnet-4-5}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      LIBRA_AGENT_STATE_DIR: /app/outputs/libra_agent_api
+      LIBRA_LLM_TIMEOUT_SECONDS: ${LIBRA_LLM_TIMEOUT_SECONDS:-180}
+    volumes:
+      - type: bind
+        source: ${LIBRA_APP_DATA_ROOT:-/opt/libra/data}/agent-outputs
+        target: /app/outputs
+    expose:
+      - "8010"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=3).read()"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - libra-private
+
+  api:
+    image: ${LIBRA_BACKEND_IMAGE:-libra-backend:latest}
+    container_name: libra-backend
+    restart: unless-stopped
+    profiles: ["api"]
+    environment:
+      TZ: Asia/Seoul
+      LIBRA_AGENT_BASE_URL: http://agent:8010
+      LIBRA_DB_HOST: ${LIBRA_DB_HOST}
+      LIBRA_DB_PORT: ${LIBRA_DB_PORT:-3306}
+      LIBRA_DB_NAME: ${LIBRA_DB_NAME:-libra}
+      LIBRA_DB_USER: ${LIBRA_DB_USER}
+      LIBRA_DB_PASSWORD: ${LIBRA_DB_PASSWORD}
+      LIBRA_S3_REGION: ${LIBRA_S3_REGION:-ap-northeast-2}
+      LIBRA_S3_BUCKET: ${LIBRA_S3_BUCKET}
+      LIBRA_KIS_REAL_APP_KEY: ${LIBRA_KIS_REAL_APP_KEY:-}
+      LIBRA_KIS_REAL_APP_SECRET: ${LIBRA_KIS_REAL_APP_SECRET:-}
+      LIBRA_KIS_REAL_ACCOUNT_NO: ${LIBRA_KIS_REAL_ACCOUNT_NO:-}
+      LIBRA_KIS_REAL_PRODUCT_CODE: ${LIBRA_KIS_REAL_PRODUCT_CODE:-01}
+      LIBRA_KIS_USER_AGENT: ${LIBRA_KIS_USER_AGENT:-LIBRA-EC2/1.0}
+    depends_on:
+      agent:
+        condition: service_healthy
+    expose:
+      - "8080"
+    networks:
+      - libra-private
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: libra-caddy
+    restart: unless-stopped
+    depends_on:
+      agent:
+        condition: service_healthy
+    environment:
+      LIBRA_DOMAIN: ${LIBRA_DOMAIN:-:80}
+      LIBRA_UPSTREAM: ${LIBRA_UPSTREAM:-agent:8010}
+    ports:
+      - "${LIBRA_HTTP_PORT:-80}:80"
+      - "${LIBRA_HTTPS_PORT:-443}:443"
+    volumes:
+      - type: bind
+        source: ./infra/caddy/Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+      - type: bind
+        source: ${LIBRA_APP_DATA_ROOT:-/opt/libra/data}/caddy-data
+        target: /data
+      - type: bind
+        source: ${LIBRA_APP_DATA_ROOT:-/opt/libra/data}/caddy-config
+        target: /config
+    networks:
+      - libra-private
+
+networks:
+  libra-private:
+    driver: bridge
