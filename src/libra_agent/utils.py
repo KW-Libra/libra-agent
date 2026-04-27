@@ -5,7 +5,10 @@ import json
 import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
+
+
+_JAPANESE_KANA_RE = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff]")
 
 
 def utc_now() -> datetime:
@@ -67,3 +70,13 @@ def collapse_whitespace(value: str) -> str:
     value = re.sub(r"[ \t\f\v]+", " ", value)
     value = re.sub(r"\n{3,}", "\n\n", value)
     return value.strip()
+
+
+def contains_japanese_kana(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(_JAPANESE_KANA_RE.search(value))
+    if isinstance(value, Mapping):
+        return any(contains_japanese_kana(item) for item in value.values())
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        return any(contains_japanese_kana(item) for item in value)
+    return False

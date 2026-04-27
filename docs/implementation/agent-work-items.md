@@ -132,6 +132,27 @@ Do not invent a custom output shape per teammate.
 - done when:
   - execution friction is clear enough for Judge to approve, defer, or request user input
 
+### Evaluation Agent
+
+- owner files:
+  - `src/libra_agent/libra/agents/evaluation_agent.py`
+  - `src/libra_agent/libra/evaluation.py`
+- API contract:
+  - `POST /v1/evaluations`
+  - `contracts/evaluation-request.schema.json`
+  - `contracts/evaluation-result.schema.json`
+- responsibility:
+  - score a stored decision after realized return/cost data is available
+  - distinguish system error from user override outcomes
+  - produce evaluation labels such as `ACCURATE`, `FALSE_POSITIVE`, `USER_CORRECT`, `USER_WRONG`, `HOLD_CORRECT`, `HOLD_WRONG`, `BLOCKED`
+- should not do:
+  - collect new disclosure/news/report data
+  - make a new portfolio decision
+  - run inside the normal Judge information-gathering loop
+- done when:
+  - backend can persist one evaluation per decision run and horizon
+  - the result is explainable enough for the frontend decision history
+
 ### Judge
 
 - owner files:
@@ -166,5 +187,6 @@ These are the first scenario names that should become scenario tests.
 - `regular_check_report_needed`
 - `push_risk_event_user_decision_required`
 - `rebalance_candidate_profit_cost_review`
+- `post_decision_evaluation_checkpoint`
 
 When these are added, keep them under `tests/scenarios/`.

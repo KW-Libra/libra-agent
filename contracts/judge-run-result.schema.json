@@ -109,6 +109,46 @@
           "minimum": 0,
           "maximum": 1
         },
+        "signal_score": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1,
+          "description": "Normalized directional score after source trust is applied."
+        },
+        "source_trust": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Static or learned reliability weight for the agent/source."
+        },
+        "event_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "horizon": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "risk_level": {
+          "type": "string",
+          "enum": ["low", "mid", "high"]
+        },
+        "opinion": {
+          "type": "string",
+          "enum": ["BUY_BIAS", "MILD_BUY", "NEUTRAL", "MILD_SELL", "SELL_BIAS"]
+        },
         "reasoning_for_judge_agent": {
           "type": "string"
         },

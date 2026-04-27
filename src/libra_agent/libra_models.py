@@ -165,6 +165,12 @@ class AgentResponse:
     urgency: Urgency
     confidence: float
     reasoning_for_judge_agent: str
+    signal_score: float = 0.0
+    source_trust: float = 0.5
+    event_type: str | None = None
+    horizon: str | None = None
+    risk_level: str = "low"
+    opinion: str = "NEUTRAL"
     limits_acknowledged: str | None = None
     references: list[Reference] = field(default_factory=list)
     tools_called: list[ToolCall] = field(default_factory=list)
@@ -186,6 +192,12 @@ class AgentResponse:
             strength=_clamp(_as_float(payload.get("strength"), 0.0), 0.0, 1.0),
             urgency=_normalize_urgency(payload.get("urgency")),
             confidence=_clamp(_as_float(payload.get("confidence"), 0.0), 0.0, 1.0),
+            signal_score=_clamp(_as_float(payload.get("signal_score"), 0.0), -1.0, 1.0),
+            source_trust=_clamp(_as_float(payload.get("source_trust"), 0.5), 0.0, 1.0),
+            event_type=_as_str(payload.get("event_type")) or None,
+            horizon=_as_str(payload.get("horizon")) or None,
+            risk_level=_as_str(payload.get("risk_level"), "low") or "low",
+            opinion=_as_str(payload.get("opinion"), "NEUTRAL") or "NEUTRAL",
             reasoning_for_judge_agent=_as_str(payload.get("reasoning_for_judge_agent")),
             limits_acknowledged=_as_str(payload.get("limits_acknowledged")) or None,
             references=references,
@@ -206,6 +218,12 @@ class AgentResponse:
             "strength": round(float(self.strength), 4),
             "urgency": self.urgency.value,
             "confidence": round(float(self.confidence), 4),
+            "signal_score": round(float(self.signal_score), 4),
+            "source_trust": round(float(self.source_trust), 4),
+            "event_type": self.event_type,
+            "horizon": self.horizon,
+            "risk_level": self.risk_level,
+            "opinion": self.opinion,
             "reasoning_for_judge_agent": self.reasoning_for_judge_agent,
             "limits_acknowledged": self.limits_acknowledged,
             "references": [item.to_dict() for item in self.references],

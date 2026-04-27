@@ -18,6 +18,7 @@ from .libra.prompts import (
     default_agent_query,
     get_information_prompt_profile,
 )
+from .libra.constraints import validate_rebalance_plan
 from .libra.llm_clients.base import ChatClientError, ChatClientProtocol
 from .libra_validation import (
     sanitize_agent_evidence,
@@ -40,7 +41,7 @@ from .libra_models import (
     Urgency,
     UserNotification,
 )
-from .utils import coerce_datetime, collapse_whitespace, stable_hash
+from .utils import coerce_datetime, collapse_whitespace, contains_japanese_kana, stable_hash
 
 
 ChatClient = ChatClientProtocol
@@ -264,9 +265,10 @@ class LocalKnowledgeBase:
     @staticmethod
     def _as_records(payload: Any) -> list[Mapping[str, Any]]:
         if isinstance(payload, Mapping):
-            documents = payload.get("documents")
-            if isinstance(documents, list):
-                return [item for item in documents if isinstance(item, Mapping)]
+            for key in ("documents", "events"):
+                records = payload.get(key)
+                if isinstance(records, list):
+                    return [item for item in records if isinstance(item, Mapping)]
         if isinstance(payload, list):
             return [item for item in payload if isinstance(item, Mapping)]
         return []
@@ -358,13 +360,13 @@ class LocalKnowledgeBase:
         tools_called = [
             ToolCall(
                 tool_name="local_knowledge.load_events",
-                purpose=f"{agent_id} agent event context",
-                summary=f"Loaded {len(relevant_events)} relevant local events from {self.source_paths.get('events', 'events')}.",
+                purpose=f"{agent_id} 에이전트 이벤트 근거 확인",
+                summary=f"관련 로컬 이벤트 {len(relevant_events)}건을 불러왔습니다.",
             ),
             ToolCall(
                 tool_name="local_knowledge.load_documents",
-                purpose=f"{agent_id} agent document context",
-                summary=f"Loaded {len(relevant_documents)} relevant local documents from the normalized cache.",
+                purpose=f"{agent_id} 에이전트 문서 근거 확인",
+                summary=f"정규화 문서 캐시에서 관련 문서 {len(relevant_documents)}건을 불러왔습니다.",
             ),
         ]
         return KnowledgeSlice(events=relevant_events, documents=relevant_documents, tools_called=tools_called)
@@ -563,8 +565,8 @@ class LLMAgent:
                 strength=0.0,
                 urgency=Urgency.DEFER,
                 confidence=0.2,
-                reasoning_for_judge_agent="Relevant local context was not available for this agent.",
-                limits_acknowledged="Current local cache does not contain matching items for the portfolio holdings.",
+                reasoning_for_judge_agent="이 에이전트가 판단할 관련 로컬 근거가 없습니다.",
+                limits_acknowledged="현재 로컬 캐시에 보유 종목과 일치하는 항목이 없습니다.",
                 tools_called=knowledge_slice.tools_called,
                 depth_used=depth,
             )
@@ -1022,6 +1024,7 @@ class JudgeOrchestrator:
         self.report_agent = agent_bundle.report
         self.profit_agent = agent_bundle.profit
         self.cost_agent = agent_bundle.cost
+        self.evaluation_agent = agent_bundle.evaluation
         self.checkpoint_path = Path(checkpoint_path).expanduser() if checkpoint_path else None
         from .libra_graph import LibraLangGraphRuntime
         self._graph_runtime = LibraLangGraphRuntime(self)
@@ -1766,14 +1769,14 @@ class JudgeOrchestrator:
         if responses:
             latest = responses[-1]
             context_parts.append(
-                f"Latest observation from {latest.agent_id}: {truncate(latest.reasoning_for_judge_agent or latest.query_understood, 180)}"
+                f"직전 {latest.agent_id} 관찰: {truncate(latest.reasoning_for_judge_agent or latest.query_understood, 180)}"
             )
         if agent_id in {"profit", "cost"}:
-            context_parts.append("Judge is evaluating whether the current draft rebalance should be executed.")
+            context_parts.append("판단 에이전트는 현재 리밸런싱 초안을 실행할지 검토하고 있습니다.")
             if candidate_plan:
-                context_parts.append(f"Candidate rebalance plan: {dict(candidate_plan)}")
+                context_parts.append(f"후보 리밸런싱 초안: {dict(candidate_plan)}")
         else:
-            context_parts.append(f"Original user request: {query}")
+            context_parts.append(f"원 사용자 요청: {query}")
         return " | ".join(part for part in context_parts if part)
 
     def _default_agent_fallback(self, *, agent_id: str, trigger: str) -> str | None:
@@ -1900,8 +1903,6 @@ class JudgeOrchestrator:
         ):
             return False
         responses = (disclosure_response, news_response)
-        if any(response.verdict == AgentVerdict.DIRECT_ANSWER_UNAVAILABLE for response in responses):
-            return False
         reasoning = "\n".join(
             collapse_whitespace(f"{response.reasoning_for_judge_agent} {response.limits_acknowledged or ''}").casefold()
             for response in responses
@@ -1913,6 +1914,8 @@ class JudgeOrchestrator:
             return False
         max_signal = max(abs(response.direction) for response in responses)
         min_confidence = min(response.confidence for response in responses)
+        if max_signal < 0.08 and all(response.urgency == Urgency.DEFER for response in responses):
+            return True
         if max_signal < 0.14 and min_confidence >= 0.5:
             return True
         if depth == "shallow" and max_signal < 0.18 and min_confidence >= 0.45:
@@ -1941,10 +1944,14 @@ class JudgeOrchestrator:
                 for token in ("리포트 필요", "리포트 확인", "report needed", "call report", "사업부", "컨센서스", "추가 정보", "preview")
             ):
                 return True
-            if response.verdict == AgentVerdict.DIRECT_ANSWER_UNAVAILABLE:
-                return True
         directions = [response.direction for response in responses]
         confidences = [response.confidence for response in responses]
+        if any(response.verdict == AgentVerdict.DIRECT_ANSWER_UNAVAILABLE for response in responses):
+            if depth == "deep" and max(abs(value) for value in directions) >= 0.12:
+                return True
+            if max(abs(value) for value in directions) >= 0.18:
+                return True
+            return False
         if directions[0] * directions[1] < -0.01 and abs(directions[0] - directions[1]) >= 0.14:
             return True
         if max(abs(value) for value in directions) >= 0.25 and min(confidences) < 0.55:
@@ -1971,7 +1978,7 @@ class JudgeOrchestrator:
         if trigger == "push" and self._push_prescreen_is_sufficient(trigger_event):
             for agent_id in ("disclosure", "news", "report"):
                 if agent_id not in called_set:
-                    rationale[agent_id] = "Push trigger already carried pre-screening, so Judge skipped extra information collection."
+                    rationale[agent_id] = "속보 트리거에 사전 확인 정보가 포함되어 추가 정보 수집을 건너뛰었습니다."
 
         if trigger == "pull":
             disclosure_response = response_map.get("disclosure")
@@ -1984,20 +1991,20 @@ class JudgeOrchestrator:
                     news_response=news_response,
                     candidate_plan=candidate_plan,
                 ):
-                    rationale["report"] = "Disclosure and News were already sufficient for this turn."
+                    rationale["report"] = "이번 판단에는 공시와 뉴스 점검만으로 충분했습니다."
                 elif not self._should_call_report(
                     query=query,
                     depth=depth,
                     disclosure_response=disclosure_response,
                     news_response=news_response,
                 ):
-                    rationale["report"] = "Judge did not see a justified need for sell-side interpretation on this turn."
+                    rationale["report"] = "이번 판단에서 증권사 해석을 추가로 확인할 근거가 부족했습니다."
 
         if not candidate_plan:
             if "profit" not in called_set:
-                rationale["profit"] = "Judge had no concrete rebalance draft to evaluate on return and risk."
+                rationale["profit"] = "수익과 위험을 평가할 구체적인 리밸런싱 초안이 없었습니다."
             if "cost" not in called_set:
-                rationale["cost"] = "No execution draft existed, so cost and liquidity checks were unnecessary."
+                rationale["cost"] = "실행 초안이 없어 거래비용과 유동성 점검이 필요하지 않았습니다."
 
         return rationale
 
@@ -2221,7 +2228,8 @@ class JudgeOrchestrator:
                     "plan_format": {"ticker": "weight_delta"},
                     "notes": [
                         "Use only supplied agent responses.",
-                        "Keep summary concise and in Korean when possible.",
+                        "Keep summary concise and write all natural-language text only in Korean.",
+                        "Do not use Japanese kana in summary, reasoning, notifications, or options.",
                         "If no trade is justified, return an empty candidate_rebalance_plan object.",
                     ],
                 },
@@ -2239,7 +2247,7 @@ class JudgeOrchestrator:
         except ChatClientError:
             return self._fallback_judge_payload(query=query, portfolio=portfolio, responses=responses, stage=stage)
         payload = sanitize_judge_payload(payload, portfolio=portfolio, stage=stage)
-        if self._is_low_signal_judge_payload(payload):
+        if self._is_low_signal_judge_payload(payload) or self._judge_payload_has_unsupported_language(payload):
             return self._fallback_judge_payload(query=query, portfolio=portfolio, responses=responses, stage=stage)
         return payload
 
@@ -2293,6 +2301,12 @@ class JudgeOrchestrator:
             "strength": response.strength,
             "urgency": response.urgency.value,
             "confidence": response.confidence,
+            "signal_score": response.signal_score,
+            "source_trust": response.source_trust,
+            "event_type": response.event_type,
+            "horizon": response.horizon,
+            "risk_level": response.risk_level,
+            "opinion": response.opinion,
             "reasoning_for_judge_agent": truncate(response.reasoning_for_judge_agent, 220),
             "limits_acknowledged": truncate(response.limits_acknowledged or "", 140) or None,
             "focus_tickers": list(response.focus_tickers),
@@ -2317,7 +2331,10 @@ class JudgeOrchestrator:
             if abs(delta) < 0.005:
                 continue
             sanitized[allowed[normalized]] = round(delta, 4)
-        return sanitized
+        constraint_check = validate_rebalance_plan(portfolio=portfolio, plan=sanitized)
+        if not constraint_check.passed:
+            return {}
+        return constraint_check.adjusted_plan
 
     def _consensus_metrics(self, responses: list[AgentResponse]) -> tuple[float, float]:
         weighted_total = 0.0
@@ -2370,8 +2387,8 @@ class JudgeOrchestrator:
                 actor="judge",
                 query="합의 형성",
                 summary=(
-                    f"Consensus {decision.consensus_score:.2f}, divergence {decision.divergence_score:.2f}, "
-                    f"candidate plan {decision.candidate_rebalance_plan or '{}'}."
+                    f"합의 점수 {decision.consensus_score:.2f}, 충돌 점수 {decision.divergence_score:.2f}, "
+                    f"후보 리밸런싱 초안 {decision.candidate_rebalance_plan or '{}'}."
                 ),
             )
         )
@@ -2397,6 +2414,15 @@ class JudgeOrchestrator:
         except (TypeError, ValueError):
             confidence_value = 0.0
         return not decision or not summary or confidence_value <= 0.0
+
+    def _judge_payload_has_unsupported_language(self, payload: Mapping[str, Any]) -> bool:
+        user_visible_fields = {
+            "summary": payload.get("summary"),
+            "reasoning": payload.get("reasoning"),
+            "user_notification": payload.get("user_notification"),
+            "options": payload.get("options"),
+        }
+        return contains_japanese_kana(user_visible_fields)
 
     def _fallback_judge_payload(
         self,
@@ -2459,7 +2485,7 @@ class JudgeOrchestrator:
             "summary": summary,
             "confidence": clamp(0.35 + (0.25 * abs(consensus)), 0.0, 0.78),
             "urgency": urgency,
-            "reasoning": "Heuristic judge fallback derived from weighted agent directions and disagreement.",
+            "reasoning": "하위 에이전트의 방향성, 신뢰도, 신호 충돌 정도를 기준으로 휴리스틱 판단을 적용했습니다.",
             "candidate_rebalance_plan": candidate_plan,
             "needs_trade_evaluation": bool(candidate_plan),
             "follow_up_at": follow_up_at,

@@ -10,6 +10,7 @@
 - `prompts/report.py`: Report Agent prompt owner
 - `agents/profit_agent.py`: Profit Agent owner
 - `agents/cost_agent.py`: Cost Agent owner
+- `agents/evaluation_agent.py`: Evaluation Agent owner
 - `prompts/judge.py`: Judge planner/decision prompt owner
 - `config.py`: LIBRA runtime/backend config owner
 - `llm_clients/`: provider adapter and client factory owner
@@ -21,6 +22,8 @@
 Each agent owner should change the matching `agents/*.py` and `prompts/*.py` pair first.
 
 Current behavior still delegates to the existing runtime implementations. The runtime owns orchestration, while prompt text and response-shape hints now live under `prompts/`.
+
+Evaluation Agent is separate from the Judge-time loop. It scores a stored decision after a feedback checkpoint or realized-return observation and is exposed through the evaluation API.
 
 ## Handoff References
 

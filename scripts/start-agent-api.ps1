@@ -11,7 +11,12 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $Python = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $Python)) {
-  $Python = "python"
+  $SharedPython = "D:\Libra\.venv\Scripts\python.exe"
+  if (Test-Path $SharedPython) {
+    $Python = $SharedPython
+  } else {
+    $Python = "python"
+  }
 }
 
 $env:LIBRA_LLM_PROVIDER = $Provider

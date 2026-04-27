@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Mapping, Protocol
 
 from libra_agent.libra_models import AgentResponse, PortfolioSnapshot
 
@@ -38,6 +38,24 @@ class TradeAgentProtocol(Protocol):
         ...
 
 
+class EvaluationAgentProtocol(Protocol):
+    agent_id: str
+    owner_scope: str
+
+    def run(
+        self,
+        *,
+        decision: str,
+        rebalance_plan: Mapping[str, float],
+        signal_score: float,
+        user_feedback: str | None,
+        realized_return_pct: float,
+        cost_pct: float = 0.0,
+        horizon: str = "1w",
+    ) -> dict[str, Any]:
+        ...
+
+
 @dataclass(slots=True)
 class AgentBundle:
     disclosure: InformationAgentProtocol
@@ -45,6 +63,7 @@ class AgentBundle:
     report: InformationAgentProtocol
     profit: TradeAgentProtocol
     cost: TradeAgentProtocol
+    evaluation: EvaluationAgentProtocol
 
 
 class DelegatingInformationAgent:

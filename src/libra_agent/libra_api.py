@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from fastapi import FastAPI, HTTPException
 
+from .libra.agents.evaluation_agent import EvaluationAgent
 from .libra.llm_clients import open_chat_client_from_env
 from .libra_models import PortfolioSnapshot, TriggerEvent
 from .libra_runtime import JudgeOrchestrator, LocalKnowledgeBase
@@ -59,6 +60,17 @@ def _as_optional_int(value: Any, *, field_name: str) -> int | None:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"{field_name} must be an integer.") from exc
+
+
+def _as_float(value: Any, *, field_name: str, default: float | None = None) -> float:
+    if value is None or value == "":
+        if default is not None:
+            return default
+        raise HTTPException(status_code=400, detail=f"{field_name} is required.")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a number.") from exc
 
 
 def _as_bool(value: Any) -> bool:
@@ -119,6 +131,62 @@ def _record_result(result: dict[str, Any], *, state_dir: Path) -> dict[str, Any]
     return result
 
 
+def _as_plain_float_map(value: Any) -> dict[str, float]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, float] = {}
+    for raw_key, raw_value in value.items():
+        try:
+            result[str(raw_key)] = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _decision_payload_from_evaluation_request(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    decision_run_result = payload.get("decision_run_result")
+    if isinstance(decision_run_result, Mapping):
+        decision = decision_run_result.get("decision")
+        if isinstance(decision, Mapping):
+            return decision
+    decision = payload.get("decision")
+    if isinstance(decision, Mapping):
+        return decision
+    return payload
+
+
+def _agent_responses_from_evaluation_request(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    decision_run_result = payload.get("decision_run_result")
+    responses = decision_run_result.get("agent_responses") if isinstance(decision_run_result, Mapping) else payload.get("agent_responses")
+    if not isinstance(responses, list):
+        return []
+    return [item for item in responses if isinstance(item, Mapping)]
+
+
+def _evaluation_signal_score(payload: Mapping[str, Any]) -> float:
+    explicit = payload.get("signal_score")
+    if explicit is not None:
+        return _as_float(explicit, field_name="signal_score")
+    responses = _agent_responses_from_evaluation_request(payload)
+    scored = []
+    for response in responses:
+        try:
+            scored.append(float(response.get("signal_score")))
+        except (TypeError, ValueError):
+            try:
+                scored.append(float(response.get("direction", 0.0)) * float(response.get("strength", 0.0)) * float(response.get("confidence", 0.0)))
+            except (TypeError, ValueError):
+                continue
+    if scored:
+        return max(scored, key=lambda item: abs(item))
+    decision_run_result = payload.get("decision_run_result")
+    decision = _decision_payload_from_evaluation_request(payload)
+    consensus = decision.get("consensus_score")
+    if consensus is None and isinstance(decision_run_result, Mapping):
+        consensus = decision_run_result.get("consensus_score")
+    return _as_float(consensus, field_name="signal_score", default=0.0)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -166,6 +234,29 @@ def create_judge_run(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return _record_result(result, state_dir=state_dir)
+
+
+@app.post("/v1/evaluations")
+def create_evaluation(payload: dict[str, Any]) -> dict[str, Any]:
+    decision_payload = _decision_payload_from_evaluation_request(payload)
+    decision = str(decision_payload.get("decision") or "").strip().upper()
+    if not decision:
+        raise HTTPException(status_code=400, detail="decision or decision_run_result.decision.decision is required.")
+    rebalance_plan = _as_plain_float_map(
+        payload.get("rebalance_plan") or decision_payload.get("candidate_rebalance_plan")
+    )
+    realized_return_pct = _as_float(payload.get("realized_return_pct"), field_name="realized_return_pct")
+    cost_pct = _as_float(payload.get("cost_pct"), field_name="cost_pct", default=0.0)
+    signal_score = _evaluation_signal_score(payload)
+    return EvaluationAgent().run(
+        decision=decision,
+        rebalance_plan=rebalance_plan,
+        signal_score=signal_score,
+        user_feedback=str(payload.get("user_feedback") or "").strip() or None,
+        realized_return_pct=realized_return_pct,
+        cost_pct=cost_pct,
+        horizon=str(payload.get("horizon") or "1w"),
+    )
 
 
 def main() -> None:

@@ -256,15 +256,15 @@ class LibraSchemaValidationTests(unittest.TestCase):
             normalized["query"],
             "최근 공시 이후 시장 반응과 관련 뉴스, 필요시 매크로 배경을 요약해줘.",
         )
-        self.assertIn("Latest observation from disclosure", normalized["context"])
+        self.assertIn("직전 disclosure 관찰", normalized["context"])
         self.assertNotIn("00066 a", normalized["context"])
         self.assertEqual(
             normalized["fallback"],
-            "Focus on market reaction, cross-checks, and whether the thesis changed.",
+            "시장 반응, 교차 확인 여부, 투자 가정 변화 여부를 우선 정리해줘.",
         )
         self.assertEqual(
             normalized["note"],
-            "Judge wants to know whether the latest disclosure changed the market view or is already priced.",
+            "판단 에이전트는 공시 내용이 시장 시각을 바꿨는지, 이미 가격에 반영됐는지 확인합니다.",
         )
 
 

@@ -343,13 +343,41 @@ class LibraLangGraphRuntime:
         rebalance_intent = any(
             token in query_lower for token in ("리밸런싱", "리밸런스", "rebalance", "초안", "비중", "매수", "매도")
         )
+        if (
+            state["trigger"] == "pull"
+            and decision.decision == DecisionType.DEFER
+            and not candidate_plan
+            and {"disclosure", "news"}.issubset(called_agent_set)
+        ):
+            response_map = {canonical_agent_id(item.agent_id): item for item in responses}
+            if self.coordinator._should_finalize_after_basic_scan(
+                query=state["query"],
+                depth=state["depth"],
+                disclosure_response=response_map.get("disclosure"),
+                news_response=response_map.get("news"),
+                candidate_plan=candidate_plan,
+            ):
+                decision.decision = DecisionType.HOLD
+                decision.urgency = Urgency.DEFER
+                decision.summary = "신규 공시나 유의미한 뉴스 신호가 없어 현재 포트폴리오를 유지합니다."
+                decision.reasoning = (
+                    "공시와 뉴스 점검에서 리밸런싱을 정당화할 신호가 없었고, "
+                    "리포트·수익·비용 에이전트 호출도 필요하지 않았습니다."
+                )
+                decision.feedback_checkpoint = None
+                decision.follow_up_at = self.coordinator._default_follow_up_at(
+                    query=state["query"],
+                    responses=responses,
+                )
+                decision.options = []
+                decision.auto_safeguards = {}
         if decision.decision == DecisionType.REBALANCE:
             guardrail_reason: str | None = None
             if not candidate_plan:
-                guardrail_reason = "Judge suggested REBALANCE without a concrete candidate_rebalance_plan."
+                guardrail_reason = "판단 에이전트가 구체적인 리밸런싱 초안 없이 REBALANCE를 제안했습니다."
                 decision.summary = "지금 단계 근거만으로는 실행 가능한 리밸런싱 초안을 만들 수 없어 결정을 보류합니다."
             elif not {"profit", "cost"}.issubset(called_agent_set):
-                guardrail_reason = "Judge suggested REBALANCE before Profit and Cost finished evaluating the draft plan."
+                guardrail_reason = "수익·비용 검토가 끝나기 전에 판단 에이전트가 REBALANCE를 제안했습니다."
                 if rebalance_intent:
                     decision.summary = "후보 리밸런싱 초안은 있지만 수익·비용 검토가 끝나지 않아 지금은 실행 결정을 보류합니다."
                 else:
@@ -389,14 +417,16 @@ class LibraLangGraphRuntime:
         if (
             decision.decision == DecisionType.DEFER
             and not candidate_plan
-            and decision.reasoning.startswith("Judge suggested REBALANCE")
+            and decision.reasoning.startswith("판단 에이전트가 구체적인 리밸런싱 초안 없이")
             and "report" in skip_rationale
         ):
             decision.reasoning = (
-                "Disclosure and News were sufficient for this turn, and Judge still had no concrete rebalance draft to evaluate."
+                "이번 판단에는 공시와 뉴스 점검만으로 충분했고, 평가할 구체적인 리밸런싱 초안은 없었습니다."
             )
         if not decision.reasoning.strip():
-            decision.reasoning = "Judge combined agent directions, divergence, and trade-evaluation results."
+            decision.reasoning = "판단 에이전트가 하위 에이전트 방향성, 신호 충돌, 거래 검토 결과를 종합했습니다."
+        if decision.decision != DecisionType.USER_DECISION_REQUIRED:
+            decision.options = []
         decision.decision_trace = self.coordinator._decision_trace(
             query=state["query"],
             executed_calls=executed_calls,

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 from .base import AgentBundle
 from .cost_agent import CostAgent
 from .disclosure_agent import DisclosureAgent
+from .evaluation_agent import EvaluationAgent
 from .news_agent import NewsAgent
 from .profit_agent import ProfitAgent
 from .report_agent import ReportAgent
@@ -20,4 +21,5 @@ def build_default_agent_bundle(*, client: "ChatClient") -> AgentBundle:
         report=ReportAgent(client=client),
         profit=ProfitAgent(),
         cost=CostAgent(),
+        evaluation=EvaluationAgent(),
     )

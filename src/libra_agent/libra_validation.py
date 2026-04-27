@@ -10,6 +10,7 @@ from .libra_models import (
     Reference,
     Urgency,
 )
+from .libra.signals import infer_signal_profile
 from .utils import collapse_whitespace, parse_datetime_or_none
 
 
@@ -470,6 +471,23 @@ def sanitize_agent_response_payload(
     response.strength = _clamp(_as_float(raw.get("strength"), response.strength), 0.0, 1.0)
     response.urgency = urgency
     response.confidence = _clamp(_as_float(raw.get("confidence"), response.confidence), 0.0, 1.0)
+    profile = infer_signal_profile(
+        agent_id=agent_id,
+        direction=response.direction,
+        strength=response.strength,
+        confidence=response.confidence,
+        evidence=evidence,
+        explicit_signal_score=raw.get("signal_score"),
+        explicit_source_trust=raw.get("source_trust"),
+        explicit_event_type=raw.get("event_type"),
+        explicit_horizon=raw.get("horizon"),
+    )
+    response.signal_score = profile.signal_score
+    response.source_trust = profile.source_trust
+    response.event_type = profile.event_type
+    response.horizon = profile.horizon
+    response.risk_level = profile.risk_level
+    response.opinion = profile.opinion
     response.reasoning_for_judge_agent = _clean_text(
         raw.get("reasoning_for_judge_agent"),
         default=response.reasoning_for_judge_agent or "",

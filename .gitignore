@@ -13,6 +13,8 @@ tools/llama.cpp/
 outputs/*
 !outputs/README.md
 
+logs/
+
 tmp/*
 !tmp/.gitkeep
 

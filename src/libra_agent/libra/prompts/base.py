@@ -24,6 +24,8 @@ def build_information_system_prompt(agent_id: str) -> str:
         "direction is between -1 and 1. strength/confidence are between 0 and 1.\n"
         "references must be an array. focus_tickers must be an array of portfolio tickers.\n"
         "Never invent external data. Use only the supplied local evidence cache.\n"
+        "Write every natural-language value only in Korean. Do not use Japanese kana. "
+        "English is allowed only for enum values, JSON keys, tickers, URLs, and source names.\n"
         f"Your role is the {agent_id} agent in a Korean investing assistant."
     )
 

@@ -8,6 +8,8 @@ Current contracts:
 
 - `judge-run-request.schema.json`
 - `judge-run-result.schema.json`
+- `evaluation-request.schema.json`
+- `evaluation-result.schema.json`
 - `push-trigger-event.schema.json`
 - `user-approval-response.schema.json`
 

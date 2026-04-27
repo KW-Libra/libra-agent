@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://libra.local/contracts/evaluation-request.schema.json",
+  "title": "Decision Evaluation Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["horizon", "realized_return_pct"],
+  "properties": {
+    "decision_run_id": {
+      "type": "string",
+      "description": "Stored backend decision run id when available."
+    },
+    "horizon": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Evaluation horizon such as 1d, 1w, or 1m."
+    },
+    "realized_return_pct": {
+      "type": "number",
+      "description": "Observed return percentage over the evaluation horizon."
+    },
+    "cost_pct": {
+      "type": "number",
+      "default": 0
+    },
+    "user_feedback": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "signal_score": {
+      "type": "number",
+      "description": "Optional explicit signal score. If omitted, the agent derives it from stored responses."
+    },
+    "rebalance_plan": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number"
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "decision_run_result": {
+      "$ref": "judge-run-result.schema.json"
+    }
+  }
+}

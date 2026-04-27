@@ -5,6 +5,7 @@
 - `report_agent.py`: Report Agent
 - `profit_agent.py`: Profit Agent
 - `cost_agent.py`: Cost Agent
+- `evaluation_agent.py`: Evaluation Agent
 - `factory.py`: one place where Judge wires the default agent bundle
 - `base.py`: shared protocols and delegation helpers
 - `../prompts/`: agent-specific prompt profiles and Judge prompt text
@@ -21,3 +22,5 @@ The default rule is:
 - agent owner edits `agents/<agent>.py`
 - same owner edits `prompts/<agent>.py`
 - shared Judge files move only when the contract really changed
+
+Evaluation Agent is an exception to the prompt-pair rule for now. It is a deterministic post-decision scorer exposed through `/v1/evaluations`, not a Judge-time information collection agent.
