@@ -44,10 +44,9 @@ The latest verified run used `supergemma4-26b` through `llama.cpp` and returned 
 
 ## Run as Local Agent API
 
-Start the same Judge runtime as an HTTP service:
+Start the same Judge runtime as an HTTP service. Claude API is the default provider when `.env` contains `ANTHROPIC_API_KEY`:
 
 ```powershell
-.\scripts\start-supergemma-llama.ps1
 .\scripts\start-agent-api.ps1
 ```
 
@@ -63,7 +62,12 @@ This calls:
 POST http://127.0.0.1:8010/v1/judge-runs
 ```
 
-The local API uses `llama_cpp` by default and expects the `llama.cpp` server to already be running on `http://127.0.0.1:8091`.
+To force the local `llama.cpp` runtime instead:
+
+```powershell
+.\scripts\start-supergemma-llama.ps1
+.\scripts\start-agent-api.ps1 -Provider llama_cpp
+```
 
 ## Claude API Mode
 

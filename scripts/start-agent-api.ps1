@@ -1,14 +1,32 @@
 param(
   [ValidateSet("llama_cpp", "ollama", "anthropic")]
-  [string]$Provider = "llama_cpp",
+  [string]$Provider = "anthropic",
   [string]$HostName = "127.0.0.1",
   [int]$Port = 8010,
-  [string]$StateDir = "outputs\agent-api-local"
+  [string]$StateDir = "outputs\agent-api-local",
+  [string]$EnvFile = ".env"
 )
 
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
+$EnvPath = Join-Path $Root $EnvFile
+if (Test-Path -LiteralPath $EnvPath) {
+  Get-Content -LiteralPath $EnvPath | ForEach-Object {
+    $Line = $_.Trim()
+    if (-not $Line -or $Line.StartsWith("#") -or -not $Line.Contains("=")) {
+      return
+    }
+    $Parts = $Line -split "=", 2
+    $Name = $Parts[0].Trim()
+    $Value = $Parts[1]
+    if ($Value.StartsWith('"') -and $Value.EndsWith('"')) {
+      $Value = $Value.Substring(1, $Value.Length - 2)
+    }
+    Set-Item -Path "Env:$Name" -Value $Value
+  }
+}
+
 $Python = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $Python)) {
   $SharedPython = "D:\Libra\.venv\Scripts\python.exe"

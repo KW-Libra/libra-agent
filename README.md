@@ -106,7 +106,6 @@ For the shortest local Judge run with `supergemma4-26b`, use [local-demo.md](doc
 For Spring Boot integration, run the Python decision engine as a small HTTP service:
 
 ```powershell
-.\scripts\start-supergemma-llama.ps1
 .\scripts\start-agent-api.ps1
 ```
 
@@ -118,9 +117,11 @@ POST http://127.0.0.1:8010/v1/judge-runs
 
 The API reads its provider from environment variables:
 
+- `LIBRA_LLM_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` for Claude API. This is the default path for normal development and AWS deployment.
 - `LIBRA_LLM_PROVIDER=llama_cpp` for the local `supergemma4-26b` server
-- `LIBRA_LLM_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` for Claude API
 - `LIBRA_LLM_PROVIDER=ollama` for temporary Ollama testing
+
+`scripts/start-agent-api.ps1` loads `.env` from the repo root if it exists. Keep `.env` local only; it is ignored by git.
 
 ## Runtime Entry Point
 
