@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -8,6 +11,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from typing_extensions import Literal, TypedDict
 
+from .libra.direct_indexing import (
+    PortfolioDefinition,
+    candidate_plan_from_drift,
+    compute_drift,
+)
 from .libra_validation import sanitize_agent_response_payload, sanitize_judge_payload
 from .libra_models import (
     AgentResponse,
@@ -29,6 +37,8 @@ class LibraGraphState(TypedDict, total=False):
     depth: str
     trigger: str
     trigger_event: dict[str, Any] | None
+    portfolio_definition: dict[str, Any] | None
+    drift_report: dict[str, Any] | None
     deadline_seconds: int | None
     thread_id: str
     enable_human_interrupts: bool
@@ -38,6 +48,8 @@ class LibraGraphState(TypedDict, total=False):
     skip_rationale: dict[str, str]
     responses: list[dict[str, Any]]
     executed_calls: list[dict[str, Any]]
+    judge_actions: list[dict[str, Any]]
+    domain_consensus: dict[str, Any]
     pending_call: dict[str, Any] | None
     turn_number: int
     candidate_plan: dict[str, float]
@@ -56,6 +68,7 @@ class LibraLangGraphRuntime:
         query: str,
         portfolio: PortfolioSnapshot,
         knowledge_base: LocalKnowledgeBase,
+        portfolio_definition: PortfolioDefinition | None = None,
         depth: str = "medium",
         trigger: str = "pull",
         trigger_event: TriggerEvent | None = None,
@@ -69,10 +82,12 @@ class LibraLangGraphRuntime:
             trigger_event=trigger_event,
             portfolio=portfolio,
         )
+        runtime_portfolio = self._portfolio_with_definition_targets(portfolio, portfolio_definition)
         input_state: LibraGraphState = {
             "query": query,
-            "portfolio": portfolio.to_dict(),
+            "portfolio": runtime_portfolio.to_dict(),
             "knowledge_base": knowledge_base.to_state_payload(),
+            "portfolio_definition": portfolio_definition.to_dict() if portfolio_definition else None,
             "depth": depth,
             "trigger": trigger,
             "trigger_event": trigger_event.to_dict() if trigger_event else None,
@@ -142,6 +157,7 @@ class LibraLangGraphRuntime:
         builder.add_node("initialize", self._initialize_node)
         builder.add_node("judge_orchestrate", self._judge_orchestrate)
         builder.add_node("execute_agent", self._execute_agent)
+        builder.add_node("domain_consensus", self._domain_consensus)
         builder.add_node("final_judge", self._final_judge)
         builder.add_node("route_human_review", self._route_human_review)
         builder.add_node("human_review", self._human_review)
@@ -150,6 +166,7 @@ class LibraLangGraphRuntime:
         builder.add_edge(START, "initialize")
         builder.add_edge("initialize", "judge_orchestrate")
         builder.add_edge("execute_agent", "judge_orchestrate")
+        builder.add_edge("domain_consensus", "final_judge")
         builder.add_edge("final_judge", "route_human_review")
         builder.add_edge("human_review", END)
         builder.add_edge("deadline_terminal", END)
@@ -157,6 +174,10 @@ class LibraLangGraphRuntime:
 
     def _initialize_node(self, state: LibraGraphState) -> dict[str, Any]:
         trigger_event = self._trigger_event_from_state(state)
+        portfolio = PortfolioSnapshot.from_dict(state["portfolio"])
+        portfolio_definition = self._portfolio_definition_from_state(state)
+        drift_report = compute_drift(portfolio_definition, portfolio) if portfolio_definition else None
+        candidate_plan = candidate_plan_from_drift(drift_report) if drift_report else {}
         run_state = self.coordinator._initialize_run_state(
             trigger=state["trigger"],
             trigger_event=trigger_event,
@@ -169,16 +190,19 @@ class LibraLangGraphRuntime:
             "skip_rationale": {},
             "responses": [],
             "executed_calls": [],
+            "judge_actions": [],
+            "domain_consensus": {},
             "pending_call": None,
             "turn_number": 1,
-            "candidate_plan": {},
-            "needs_trade_eval": False,
+            "candidate_plan": candidate_plan,
+            "needs_trade_eval": bool(candidate_plan),
+            "drift_report": drift_report.to_dict() if drift_report else None,
             "final_result": {},
         }
 
     def _judge_orchestrate(
         self, state: LibraGraphState
-    ) -> Command[Literal["deadline_terminal", "execute_agent", "final_judge"]]:
+    ) -> Command[Literal["deadline_terminal", "execute_agent", "domain_consensus"]]:
         run_state = self._deserialize_run_state(state["run_state"])
         if self.coordinator._deadline_exceeded(run_state):
             return Command(goto="deadline_terminal")
@@ -196,10 +220,32 @@ class LibraLangGraphRuntime:
             trigger_event=trigger_event,
             candidate_plan=state.get("candidate_plan", {}),
         )
-        candidate_plan = dict(action.get("candidate_rebalance_plan", {}))
+        action_plan = action.get("candidate_rebalance_plan", {})
+        candidate_plan = dict(action_plan) if isinstance(action_plan, Mapping) and action_plan else dict(state.get("candidate_plan", {}))
+        if action.get("action") == "FINALIZE" and candidate_plan:
+            forced_action = self._trade_review_action(
+                query=state["query"],
+                responses=responses,
+                called_agents=list(state["called_agents"]),
+                trigger=state["trigger"],
+                trigger_event=trigger_event,
+                candidate_plan=candidate_plan,
+            )
+            if forced_action is not None:
+                action = forced_action
+        judge_actions = list(state.get("judge_actions", []))
+        judge_actions.append(
+            self._serialize_judge_action(
+                action,
+                turn_number=int(state.get("turn_number", 1)),
+                called_agents=list(state["called_agents"]),
+                response_count=len(responses),
+            )
+        )
         update: dict[str, Any] = {
             "candidate_plan": candidate_plan,
             "needs_trade_eval": bool(candidate_plan),
+            "judge_actions": judge_actions,
             "pending_call": None,
         }
         if action.get("action") == "CALL_AGENT":
@@ -214,7 +260,7 @@ class LibraLangGraphRuntime:
                 )
             )
             return Command(update=update, goto="execute_agent")
-        return Command(update=update, goto="final_judge")
+        return Command(update=update, goto="domain_consensus")
 
     def _execute_agent(self, state: LibraGraphState) -> dict[str, Any]:
         pending_call_payload = state.get("pending_call")
@@ -270,12 +316,149 @@ class LibraLangGraphRuntime:
         executed_calls.append(self._serialize_planned_call(planned_call))
         called_agents.append(agent_id)
         return {
+            "knowledge_base": knowledge_base.to_state_payload(),
             "responses": responses,
             "executed_calls": executed_calls,
             "called_agents": called_agents,
             "pending_call": None,
             "turn_number": state["turn_number"] + 1,
         }
+
+    def _domain_consensus(self, state: LibraGraphState) -> dict[str, Any]:
+        domain_agents = getattr(self.coordinator, "domain_agents", {})
+        if not domain_agents:
+            return {"domain_consensus": {}}
+
+        from libra_agent.domain_agents._adapter import (
+            _run_async,
+            domain_verdict_to_agent_response,
+            portfolio_snapshot_to_domain_context,
+        )
+        from libra_agent.domain_agents._consensus import compute_domain_consensus
+
+        already_called = {canonical_agent_id(item) for item in state.get("called_agents", [])}
+        pending = {
+            name: agent
+            for name, agent in domain_agents.items()
+            if canonical_agent_id(name) not in already_called
+        }
+        if not pending:
+            responses = [AgentResponse.from_dict(item) for item in state["responses"]]
+            return {"domain_consensus": compute_domain_consensus(responses)}
+
+        portfolio = PortfolioSnapshot.from_dict(state["portfolio"])
+        candidate_plan = dict(state.get("candidate_plan", {}))
+        responses = [AgentResponse.from_dict(item) for item in state["responses"]]
+        context_parts = [
+            f"원 사용자 요청: {state['query']}",
+            f"후보 리밸런싱 초안: {candidate_plan or '{}'}",
+        ]
+        for response in responses[-6:]:
+            context_parts.append(f"{response.agent_id}: {response.reasoning_for_judge_agent or response.query_understood}")
+        proposed_trades = [
+            {
+                "symbol": ticker,
+                "weight_delta": float(delta),
+                "side": "buy" if float(delta) > 0 else "sell" if float(delta) < 0 else "hold",
+            }
+            for ticker, delta in candidate_plan.items()
+        ]
+        ctx = portfolio_snapshot_to_domain_context(
+            portfolio,
+            user_id="libra",
+            proposed_trades=proposed_trades,
+            market_context_str="\n".join(context_parts),
+        )
+
+        async def collect() -> list[tuple[str, Any]]:
+            async def call_one(name: str, agent: Any) -> tuple[str, Any]:
+                try:
+                    return name, await agent.deliberate(ctx)
+                except Exception as exc:  # pragma: no cover - exercised by optional SDK/env failures
+                    return name, SimpleNamespace(
+                        agent_id=name,
+                        vote="abstain",
+                        confidence=0.1,
+                        rationale=f"{name} 도메인 에이전트 호출 실패: {exc}",
+                        signals=[{"label": "domain_agent_error", "value": str(exc)}],
+                        llm_used="error",
+                    )
+
+            if self._serial_domain_agents():
+                delay_seconds = self._domain_agent_delay_seconds()
+                collected: list[tuple[str, Any]] = []
+                for offset, (name, agent) in enumerate(pending.items()):
+                    if offset > 0 and delay_seconds > 0:
+                        await asyncio.sleep(delay_seconds)
+                    collected.append(await call_one(name, agent))
+                return collected
+
+            return list(await asyncio.gather(*(call_one(name, agent) for name, agent in pending.items())))
+
+        verdicts = _run_async(collect())
+        serialized_responses = list(state["responses"])
+        executed_calls = list(state["executed_calls"])
+        called_agents = list(state["called_agents"])
+        turn_number = int(state.get("turn_number", 1))
+        new_responses: list[AgentResponse] = []
+        for offset, (name, verdict) in enumerate(verdicts):
+            response = domain_verdict_to_agent_response(
+                verdict,
+                agent_id=canonical_agent_id(name),
+                turn_number=turn_number + offset,
+                query=state["query"],
+            )
+            new_responses.append(response)
+            serialized_responses.append(response.to_dict())
+            called_agents.append(canonical_agent_id(name))
+            executed_calls.append(
+                self._serialize_planned_call(
+                    PlannedAgentCall(
+                        agent_id=canonical_agent_id(name),
+                        query=f"{name} 도메인 에이전트 합의 검토",
+                        context="\n".join(context_parts),
+                        depth="medium",
+                        fallback=None,
+                        note="Judge 최종 판단 전 도메인 에이전트 합의 단계입니다.",
+                    )
+                )
+            )
+
+        all_domain_responses = [
+            response
+            for response in [*responses, *new_responses]
+            if response.agent_id in set(domain_agents)
+        ]
+        return {
+            "responses": serialized_responses,
+            "executed_calls": executed_calls,
+            "called_agents": called_agents,
+            "turn_number": turn_number + len(verdicts),
+            "domain_consensus": compute_domain_consensus(all_domain_responses),
+        }
+
+    def _serial_domain_agents(self) -> bool:
+        raw = os.environ.get("LIBRA_DOMAIN_AGENT_SERIAL")
+        if raw is not None:
+            return raw.lower() in {"1", "true", "yes", "on"}
+        return os.environ.get("LLM_ROUTING_POLICY", "").lower() == "gemini"
+
+    def _domain_agent_delay_seconds(self) -> float:
+        raw = os.environ.get("LIBRA_DOMAIN_AGENT_DELAY_SECONDS") or os.environ.get("LIBRA_GEMINI_THROTTLE_SECONDS")
+        if raw is not None:
+            try:
+                return max(0.0, float(raw))
+            except ValueError:
+                return 0.0
+        free_tier = os.environ.get("LIBRA_GEMINI_FREE_TIER", "true").lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
+        if free_tier and os.environ.get("LLM_ROUTING_POLICY", "").lower() == "gemini":
+            return 13.0
+        return 0.0
 
     def _final_judge(self, state: LibraGraphState) -> dict[str, Any]:
         portfolio = PortfolioSnapshot.from_dict(state["portfolio"])
@@ -284,6 +467,7 @@ class LibraLangGraphRuntime:
         run_state = self._deserialize_run_state(state["run_state"])
         responses = [AgentResponse.from_dict(item) for item in state["responses"]]
         executed_calls = [self._deserialize_planned_call(item) for item in state["executed_calls"]]
+        judge_actions = list(state.get("judge_actions", []))
         called_agents = list(state["called_agents"])
         skipped_agents = list(state["skipped_agents"])
         skip_rationale = dict(state["skip_rationale"])
@@ -307,6 +491,8 @@ class LibraLangGraphRuntime:
             portfolio=portfolio,
             responses=responses,
             stage="final",
+            candidate_plan=candidate_plan,
+            drift_report=state.get("drift_report"),
         )
         final_payload = sanitize_judge_payload(final_payload, portfolio=portfolio, stage="final")
         consensus_score, divergence_score = self.coordinator._consensus_metrics(responses)
@@ -398,6 +584,16 @@ class LibraLangGraphRuntime:
             portfolio=portfolio,
             run_state=run_state,
         )
+        from libra_agent.domain_agents._consensus import DOMAIN_AGENT_IDS, apply_compliance_veto, compute_domain_consensus
+
+        domain_responses = [response for response in responses if response.agent_id in DOMAIN_AGENT_IDS]
+        if domain_responses:
+            domain_consensus = dict(state.get("domain_consensus") or compute_domain_consensus(domain_responses))
+            decision.auto_safeguards = {
+                **dict(decision.auto_safeguards),
+                "domain_consensus": domain_consensus,
+            }
+            decision = apply_compliance_veto(decision, domain_responses)
         if not decision.follow_up_at and decision.decision.value == "DEFER":
             decision.follow_up_at = self.coordinator._default_follow_up_at(query=state["query"], responses=responses)
         if not decision.feedback_checkpoint and decision.decision.value == "REBALANCE":
@@ -430,6 +626,7 @@ class LibraLangGraphRuntime:
         decision.decision_trace = self.coordinator._decision_trace(
             query=state["query"],
             executed_calls=executed_calls,
+            judge_actions=judge_actions,
             responses=responses,
             decision=decision,
         )
@@ -466,6 +663,11 @@ class LibraLangGraphRuntime:
                 "agent_responses": [response.to_dict() for response in responses],
                 "decision": decision.to_dict(),
                 "knowledge_sources": dict(knowledge_base.source_paths),
+                "direct_indexing": {
+                    "portfolio_definition": state.get("portfolio_definition"),
+                    "drift_report": state.get("drift_report"),
+                    "candidate_rebalance_plan": candidate_plan,
+                },
             }
         }
 
@@ -532,8 +734,10 @@ class LibraLangGraphRuntime:
             skipped_agents=list(state["skipped_agents"]),
             skip_rationale=dict(state["skip_rationale"]),
             executed_calls=executed_calls,
+            judge_actions=list(state.get("judge_actions", [])),
             responses=responses,
             run_state=run_state,
+            candidate_plan=dict(state.get("candidate_plan", {})),
         )
         return {"final_result": final_result}
 
@@ -584,11 +788,116 @@ class LibraLangGraphRuntime:
             note=str(payload.get("note")) if payload.get("note") is not None else None,
         )
 
+    def _serialize_judge_action(
+        self,
+        action: Mapping[str, Any],
+        *,
+        turn_number: int,
+        called_agents: list[str],
+        response_count: int,
+    ) -> dict[str, Any]:
+        agent_id = str(action.get("agent_id") or "").strip()
+        candidate_plan = action.get("candidate_rebalance_plan", {})
+        return {
+            "turn_number": turn_number,
+            "action": str(action.get("action") or "").strip().upper(),
+            "agent_id": canonical_agent_id(agent_id) if agent_id else None,
+            "reason": str(action.get("reason") or "").strip(),
+            "query": str(action.get("query") or "").strip(),
+            "context": str(action.get("context") or "").strip(),
+            "depth": str(action.get("depth") or "").strip(),
+            "candidate_rebalance_plan": dict(candidate_plan) if isinstance(candidate_plan, Mapping) else {},
+            "called_agents_before": list(called_agents),
+            "response_count_before": response_count,
+        }
+
     def _trigger_event_from_state(self, state: LibraGraphState) -> TriggerEvent | None:
         payload = state.get("trigger_event")
         if isinstance(payload, Mapping):
             return TriggerEvent.from_dict(payload)
         return None
+
+    def _portfolio_definition_from_state(self, state: LibraGraphState) -> PortfolioDefinition | None:
+        payload = state.get("portfolio_definition")
+        if isinstance(payload, Mapping):
+            return PortfolioDefinition.from_dict(payload)
+        return None
+
+    def _portfolio_with_definition_targets(
+        self,
+        portfolio: PortfolioSnapshot,
+        definition: PortfolioDefinition | None,
+    ) -> PortfolioSnapshot:
+        if definition is None:
+            return portfolio
+        payload = portfolio.to_dict()
+        holdings = list(payload.get("holdings", []))
+        existing = {
+            "".join(char for char in str(item.get("ticker", "")).upper() if char.isalnum())
+            for item in holdings
+            if isinstance(item, Mapping)
+        }
+        for target in definition.target_weights:
+            if target.ticker in existing:
+                continue
+            holdings.append(
+                {
+                    "ticker": target.ticker,
+                    "company_name": target.company_name,
+                    "weight": 0.0,
+                    "aliases": [target.company_name],
+                }
+            )
+        payload["holdings"] = holdings
+        return PortfolioSnapshot.from_dict(payload)
+
+    def _trade_review_action(
+        self,
+        *,
+        query: str,
+        responses: list[AgentResponse],
+        called_agents: list[str],
+        trigger: str,
+        trigger_event: TriggerEvent | None,
+        candidate_plan: Mapping[str, float],
+    ) -> dict[str, Any] | None:
+        called = {canonical_agent_id(item) for item in called_agents}
+        next_agent = "profit" if "profit" not in called else "cost" if "cost" not in called else None
+        if next_agent is None:
+            return None
+        disclosure_response = next(
+            (item for item in responses if canonical_agent_id(item.agent_id) == "disclosure"),
+            None,
+        )
+        return {
+            "action": "CALL_AGENT",
+            "reason": f"후보 리밸런싱 초안이 있으므로 최종 실행 판단 전에 {next_agent} 검토 의견을 추가합니다.",
+            "agent_id": next_agent,
+            "query": self.coordinator._default_agent_query(
+                agent_id=next_agent,
+                trigger=trigger,
+                disclosure_response=disclosure_response,
+                responses=responses,
+            ),
+            "context": self.coordinator._default_agent_context(
+                agent_id=next_agent,
+                query=query,
+                responses=responses,
+                trigger_event=trigger_event,
+                candidate_plan=candidate_plan,
+            ),
+            "depth": "medium",
+            "fallback": self.coordinator._default_agent_fallback(agent_id=next_agent, trigger=trigger),
+            "note": self.coordinator._default_agent_note(
+                agent_id=next_agent,
+                query=query,
+                responses=responses,
+                trigger=trigger,
+                trigger_event=trigger_event,
+                candidate_plan=candidate_plan,
+            ),
+            "candidate_rebalance_plan": dict(candidate_plan),
+        }
 
     def _default_thread_id(
         self,

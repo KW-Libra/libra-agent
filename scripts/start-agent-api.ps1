@@ -1,5 +1,5 @@
 param(
-  [ValidateSet("llama_cpp", "ollama", "anthropic")]
+  [ValidateSet("llama_cpp", "ollama", "anthropic", "gemini")]
   [string]$Provider = "anthropic",
   [string]$HostName = "127.0.0.1",
   [int]$Port = 8010,

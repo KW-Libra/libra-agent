@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 
-BackendName = Literal["ollama", "llama_cpp", "anthropic"]
+BackendName = Literal["ollama", "llama_cpp", "anthropic", "gemini"]
 
 DEFAULT_OLLAMA_MODEL = "dolphin-llama3:8b"
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
@@ -15,6 +15,9 @@ DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-5"
 DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_ANTHROPIC_MAX_TOKENS = 4096
+DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MAX_TOKENS = 4096
 DEFAULT_LLAMA_SERVER_PATH = Path("tools") / "llama.cpp" / "b8783" / "bin" / "llama-server.exe"
 DEFAULT_LLAMA_MODEL_PATH = (
     Path("models") / "supergemma4-26b" / "supergemma4-26b-abliterated-multimodal-Q4_K_M.gguf"
@@ -68,7 +71,17 @@ class AnthropicBackendConfig:
     timeout_seconds: float = 180.0
 
 
-LibraBackendConfig = OllamaBackendConfig | LlamaCppBackendConfig | AnthropicBackendConfig
+@dataclass(slots=True, frozen=True)
+class GeminiBackendConfig:
+    backend: Literal["gemini"] = "gemini"
+    api_key: str = ""
+    model: str = DEFAULT_GEMINI_MODEL
+    base_url: str = DEFAULT_GEMINI_BASE_URL
+    max_tokens: int = DEFAULT_GEMINI_MAX_TOKENS
+    timeout_seconds: float = 180.0
+
+
+LibraBackendConfig = OllamaBackendConfig | LlamaCppBackendConfig | AnthropicBackendConfig | GeminiBackendConfig
 
 
 def add_backend_arguments(
@@ -80,7 +93,7 @@ def add_backend_arguments(
     parser.add_argument(
         "--backend",
         default=default_backend,
-        choices=("ollama", "llama_cpp", "anthropic"),
+        choices=("ollama", "llama_cpp", "anthropic", "gemini"),
         help=backend_help,
     )
     parser.add_argument("--model", default=DEFAULT_OLLAMA_MODEL, help="Ollama model name")
@@ -109,6 +122,26 @@ def add_backend_arguments(
         type=int,
         default=DEFAULT_ANTHROPIC_MAX_TOKENS,
         help="Maximum output tokens for Claude responses",
+    )
+    parser.add_argument(
+        "--gemini-api-key",
+        help="Gemini API key. Defaults to GEMINI_API_KEY.",
+    )
+    parser.add_argument(
+        "--gemini-model",
+        default=None,
+        help="Gemini model name. Defaults to GEMINI_MODEL or LIBRA_GEMINI_MODEL.",
+    )
+    parser.add_argument(
+        "--gemini-base-url",
+        default=DEFAULT_GEMINI_BASE_URL,
+        help="Gemini API base URL",
+    )
+    parser.add_argument(
+        "--gemini-max-tokens",
+        type=int,
+        default=DEFAULT_GEMINI_MAX_TOKENS,
+        help="Maximum output tokens for Gemini responses",
     )
     parser.add_argument(
         "--llama-server-path",
@@ -162,6 +195,19 @@ def backend_config_from_args(args: Any) -> LibraBackendConfig:
             base_url=str(getattr(args, "anthropic_base_url", DEFAULT_ANTHROPIC_BASE_URL)),
             anthropic_version=str(getattr(args, "anthropic_version", DEFAULT_ANTHROPIC_VERSION)),
             max_tokens=int(getattr(args, "anthropic_max_tokens", DEFAULT_ANTHROPIC_MAX_TOKENS)),
+        )
+    if backend == "gemini":
+        model = (
+            getattr(args, "gemini_model", None)
+            or os.getenv("LIBRA_GEMINI_MODEL")
+            or os.getenv("GEMINI_MODEL")
+            or DEFAULT_GEMINI_MODEL
+        )
+        return GeminiBackendConfig(
+            api_key=str(getattr(args, "gemini_api_key", "") or os.getenv("GEMINI_API_KEY", "")),
+            model=str(model),
+            base_url=str(getattr(args, "gemini_base_url", DEFAULT_GEMINI_BASE_URL)),
+            max_tokens=int(getattr(args, "gemini_max_tokens", DEFAULT_GEMINI_MAX_TOKENS)),
         )
     if backend == "llama_cpp":
         raw_mmproj = getattr(args, "llama_mmproj_path", None)
@@ -226,6 +272,14 @@ def backend_config_from_env(*, default_backend: BackendName = "llama_cpp") -> Li
             base_url=os.getenv("ANTHROPIC_BASE_URL", DEFAULT_ANTHROPIC_BASE_URL),
             anthropic_version=os.getenv("ANTHROPIC_VERSION", DEFAULT_ANTHROPIC_VERSION),
             max_tokens=_env_int("ANTHROPIC_MAX_TOKENS", DEFAULT_ANTHROPIC_MAX_TOKENS),
+            timeout_seconds=_env_float("LIBRA_LLM_TIMEOUT_SECONDS", 180.0),
+        )
+    if backend == "gemini":
+        return GeminiBackendConfig(
+            api_key=os.getenv("GEMINI_API_KEY", ""),
+            model=(os.getenv("LIBRA_GEMINI_MODEL") or os.getenv("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL),
+            base_url=os.getenv("GEMINI_BASE_URL", DEFAULT_GEMINI_BASE_URL),
+            max_tokens=_env_int("GEMINI_MAX_TOKENS", DEFAULT_GEMINI_MAX_TOKENS),
             timeout_seconds=_env_float("LIBRA_LLM_TIMEOUT_SECONDS", 180.0),
         )
     if backend == "llama_cpp":

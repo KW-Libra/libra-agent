@@ -16,6 +16,23 @@ dependencies = [
   "uvicorn[standard]>=0.30.0",
 ]
 
+[project.optional-dependencies]
+# FinBERT + Gemini × Claude 적대 검토 파이프라인 (libra_agent.sentiment).
+# 미설치 시 sentiment 모듈은 graceful degrade (모두 neutral 반환).
+sentiment = [
+  "anthropic>=0.39",
+  "python-dotenv>=1.0",
+  "transformers>=4.40",
+  "torch>=2.2",
+]
+domain_agents = [
+  "anthropic>=0.39",
+  "google-generativeai>=0.7",
+  "numpy>=1.26",
+  "scipy>=1.11",
+  "aiohttp>=3.9",
+]
+
 [project.scripts]
 libra-agent-api = "libra_agent.libra_api:main"
 libra-agent-run = "libra_agent.libra_cli:main"

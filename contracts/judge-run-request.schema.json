@@ -164,6 +164,39 @@
               "type": "null"
             }
           ]
+        },
+        "average_price": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Average acquisition price per share when provided by the broker."
+        },
+        "market_value_krw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Broker-evaluated holding market value in KRW."
+        },
+        "unrealized_pnl_krw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Unrealized profit or loss in KRW when provided by the broker."
         }
       }
     }

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from libra_agent.libra.config import (
     AnthropicBackendConfig,
+    GeminiBackendConfig,
     LlamaCppBackendConfig,
     OllamaBackendConfig,
     backend_config_from_args,
@@ -14,6 +15,7 @@ from libra_agent.libra.config import (
 )
 from libra_agent.libra.llm_clients import create_chat_client
 from libra_agent.anthropic_client import AnthropicChatClient
+from libra_agent.gemini_client import GeminiChatClient
 from libra_agent.llama_cpp_client import LlamaCppServerClient
 from libra_agent.ollama_client import OllamaChatClient
 
@@ -78,6 +80,24 @@ class LibraBackendConfigTests(unittest.TestCase):
         self.assertEqual(config.base_url, "https://api.anthropic.test")
         self.assertEqual(config.max_tokens, 2048)
 
+    def test_backend_config_from_args_builds_gemini_config(self) -> None:
+        args = argparse.Namespace(
+            backend="gemini",
+            gemini_api_key="test-key",
+            gemini_model="gemini-test",
+            gemini_base_url="https://generativelanguage.test",
+            gemini_max_tokens=2048,
+        )
+
+        config = backend_config_from_args(args)
+
+        self.assertIsInstance(config, GeminiBackendConfig)
+        self.assertEqual(config.backend, "gemini")
+        self.assertEqual(config.api_key, "test-key")
+        self.assertEqual(config.model, "gemini-test")
+        self.assertEqual(config.base_url, "https://generativelanguage.test")
+        self.assertEqual(config.max_tokens, 2048)
+
     def test_backend_config_from_env_defaults_to_llama_without_launch(self) -> None:
         self.addCleanup(os.environ.pop, "LIBRA_LLM_PROVIDER", None)
         self.addCleanup(os.environ.pop, "LIBRA_BACKEND", None)
@@ -128,6 +148,17 @@ class LibraBackendConfigTests(unittest.TestCase):
 
         self.assertIsInstance(client, AnthropicChatClient)
         self.assertEqual(client.model, "claude-test")
+
+    def test_create_chat_client_returns_gemini_client(self) -> None:
+        client = create_chat_client(
+            GeminiBackendConfig(
+                api_key="test-key",
+                model="gemini-test",
+            )
+        )
+
+        self.assertIsInstance(client, GeminiChatClient)
+        self.assertEqual(client.model, "gemini-test")
 
 
 if __name__ == "__main__":

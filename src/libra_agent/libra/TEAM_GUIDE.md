@@ -21,7 +21,9 @@
 
 Each agent owner should change the matching `agents/*.py` and `prompts/*.py` pair first.
 
-Current behavior still delegates to the existing runtime implementations. The runtime owns orchestration, while prompt text and response-shape hints now live under `prompts/`.
+The runtime owns orchestration. Sub-agent behavior lives in `agents/`, and prompt text plus response-shape hints live under `prompts/`.
+
+Information agents may override `prepare_request()` in their own file when they need agent-specific query shaping before the shared LLM/tool loop runs. Trade agents own their deterministic plan evaluators directly in their own files.
 
 Evaluation Agent is separate from the Judge-time loop. It scores a stored decision after a feedback checkpoint or realized-return observation and is exposed through the evaluation API.
 

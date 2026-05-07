@@ -3,6 +3,8 @@ from __future__ import annotations
 
 JUDGE_ACTION_RULES = [
     "Choose exactly one next action.",
+    "Judge must decide the first and every later call from the current trigger, user request, and observations.",
+    "Never follow a precomputed collection order.",
     "Do not call an agent that already answered unless there is a very strong reason.",
     "Push events already include News pre-screening in trigger_event.",
     "Use Profit and Cost only when you have a candidate rebalance plan or execution question.",
@@ -11,6 +13,7 @@ JUDGE_ACTION_RULES = [
     "Do not call Report on pull unless there is conflict, a meaningful directional signal, or an explicit report request.",
     "Do not call Report just because the local cache is empty or an agent returned DIRECT_ANSWER_UNAVAILABLE.",
     "When push trigger_event already has cross-check and market reaction, avoid re-running Disclosure or News by default.",
+    "Domain agents are evaluated in a separate consensus stage when enabled; do not route them through CALL_AGENT.",
 ]
 
 JUDGE_ACTION_SYSTEM_PROMPT = (
@@ -18,9 +21,12 @@ JUDGE_ACTION_SYSTEM_PROMPT = (
     "Choose the next best action in an agentic loop. "
     "Return one JSON object with keys: action, reason, agent_id, query, context, depth, fallback, note, candidate_rebalance_plan. "
     "If action is FINALIZE, omit agent_id/query/context. "
-    "Respect dynamic orchestration: decide based on current observations, not a fixed pipeline. "
+    "Respect dynamic orchestration: observe state, choose one agent or FINALIZE, then wait for the next observation. "
     "Write every natural-language value only in Korean. Do not use Japanese kana. "
     "English is allowed only for enum values, JSON keys, tickers, URLs, and source names."
+    "\nAvailable agents: DisclosureAgent, NewsAgent, ReportAgent, ProfitAgent, CostAgent, EvaluationAgent. "
+    "Optional domain consensus agents when enabled: RiskAgent, TaxAgent, ComplianceAgent, MacroAgent, "
+    "SentimentAgent, ExecutionAgent, ESGAgent. Domain agents are handled by the consensus stage."
 )
 
 JUDGE_PHASE_SYSTEM_PROMPT = (
@@ -31,6 +37,7 @@ JUDGE_PHASE_SYSTEM_PROMPT = (
     "On a calm pull check with no meaningful supplied signal and no trade draft, prefer HOLD over DEFER. "
     "Write every natural-language value only in Korean. Do not use Japanese kana. "
     "English is allowed only for enum values, JSON keys, tickers, URLs, and source names."
+    " If domain agent responses are present, treat ComplianceAgent reject as a hard veto that requires USER_DECISION_REQUIRED."
 )
 
 JUDGE_PHASE_REQUIRED_KEYS = [

@@ -23,4 +23,8 @@ The default rule is:
 - same owner edits `prompts/<agent>.py`
 - shared Judge files move only when the contract really changed
 
+Information agents share the base LLM/tool-loop adapter, but each owner can override `prepare_request()` inside their own agent file to shape the query, context, note, fallback, or depth before the shared loop runs.
+
+Profit and Cost own their deterministic evaluators directly in `profit_agent.py` and `cost_agent.py`.
+
 Evaluation Agent is an exception to the prompt-pair rule for now. It is a deterministic post-decision scorer exposed through `/v1/evaluations`, not a Judge-time information collection agent.

@@ -1,0 +1,20 @@
+LIBRA Agent
+Copyright 2026 LIBRA contributors
+
+This product includes software developed by Tauric Research
+(https://github.com/TauricResearch/TradingAgents),
+licensed under the Apache License, Version 2.0
+(http://www.apache.org/licenses/LICENSE-2.0).
+
+The following files contain code adapted from TradingAgents:
+
+- src/libra_agent/libra/reflection.py
+  Adapted from tradingagents/graph/reflection.py.
+  Modifications:
+    * Translated prompts to Korean for LIBRA decision context.
+    * Replaced LangChain-style invoke() with LIBRA's chat_json() interface.
+    * Added rebalance plan, signal score, user feedback to the input context.
+    * Returns reflection text via a structured JSON envelope.
+
+A copy of the Apache License, Version 2.0 is bundled at docs/THIRD_PARTY_LICENSES.md
+or available at http://www.apache.org/licenses/LICENSE-2.0.
