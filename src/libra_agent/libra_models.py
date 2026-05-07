@@ -241,6 +241,9 @@ class PortfolioHolding:
     aliases: tuple[str, ...] = ()
     shares: float | None = None
     last_price: float | None = None
+    average_price: float | None = None
+    market_value_krw: float | None = None
+    unrealized_pnl_krw: float | None = None
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> PortfolioHolding:
@@ -251,6 +254,9 @@ class PortfolioHolding:
             aliases=tuple(_as_str(item) for item in _as_list(payload.get("aliases")) if _as_str(item)),
             shares=_as_float(payload.get("shares")) if payload.get("shares") is not None else None,
             last_price=_as_float(payload.get("last_price")) if payload.get("last_price") is not None else None,
+            average_price=_as_float(payload.get("average_price")) if payload.get("average_price") is not None else None,
+            market_value_krw=_as_float(payload.get("market_value_krw")) if payload.get("market_value_krw") is not None else None,
+            unrealized_pnl_krw=_as_float(payload.get("unrealized_pnl_krw")) if payload.get("unrealized_pnl_krw") is not None else None,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -261,6 +267,9 @@ class PortfolioHolding:
             "aliases": list(self.aliases),
             "shares": self.shares,
             "last_price": self.last_price,
+            "average_price": self.average_price,
+            "market_value_krw": self.market_value_krw,
+            "unrealized_pnl_krw": self.unrealized_pnl_krw,
         }
 
 

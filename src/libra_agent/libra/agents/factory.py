@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 from .base import AgentBundle
@@ -15,11 +16,16 @@ if TYPE_CHECKING:
 
 
 def build_default_agent_bundle(*, client: "ChatClient") -> AgentBundle:
-    return AgentBundle(
+    bundle_kwargs = dict(
         disclosure=DisclosureAgent(client=client),
         news=NewsAgent(client=client),
         report=ReportAgent(client=client),
         profit=ProfitAgent(),
         cost=CostAgent(),
-        evaluation=EvaluationAgent(),
+        evaluation=EvaluationAgent(client=client),
     )
+    if os.environ.get("LIBRA_DOMAIN_AGENTS_ENABLED", "false").strip().lower() == "true":
+        from libra_agent.domain_agents._adapter import build_domain_agent_adapters
+
+        bundle_kwargs.update(build_domain_agent_adapters())
+    return AgentBundle(**bundle_kwargs)

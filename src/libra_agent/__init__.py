@@ -5,6 +5,7 @@ from importlib import import_module
 __all__ = [
     "JudgeOrchestrator",
     "AnthropicChatClient",
+    "GeminiChatClient",
     "LibraLangGraphRuntime",
     "LibraDecisionStore",
     "LlamaCppServerClient",
@@ -18,6 +19,7 @@ __all__ = [
 
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "AnthropicChatClient": (".anthropic_client", "AnthropicChatClient"),
+    "GeminiChatClient": (".gemini_client", "GeminiChatClient"),
     "JudgeOrchestrator": (".libra_runtime", "JudgeOrchestrator"),
     "LibraLangGraphRuntime": (".libra_graph", "LibraLangGraphRuntime"),
     "LibraDecisionStore": (".libra_store", "LibraDecisionStore"),

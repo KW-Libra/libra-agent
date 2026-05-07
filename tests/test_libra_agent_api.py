@@ -5,7 +5,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 from libra_agent.libra.agents import EvaluationAgent
-from libra_agent.libra_api import app
+from libra_agent.libra_api import _build_knowledge_base, app
 
 
 class LibraAgentApiTests(unittest.TestCase):
@@ -39,6 +39,28 @@ class LibraAgentApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("knowledge_base", response.json()["detail"])
+
+    def test_knowledge_base_accepts_ingest_refresh_options(self) -> None:
+        knowledge_base = _build_knowledge_base(
+            {
+                "knowledge_base": {
+                    "events": [],
+                    "documents": [],
+                    "source_paths": {},
+                },
+                "allow_ingest_refresh": True,
+                "ingest_refresh": {
+                    "mode": "live",
+                    "root": "D:\\libra-ingest",
+                    "out_dir": "D:\\libra-data\\knowledge\\agent_refresh",
+                    "rss_limit": 1,
+                },
+            }
+        )
+
+        self.assertEqual(knowledge_base.source_paths["ingest_refresh_enabled"], "true")
+        self.assertEqual(knowledge_base.source_paths["ingest_refresh_mode"], "live")
+        self.assertEqual(knowledge_base.source_paths["ingest_rss_limit"], "1")
 
     def test_evaluation_endpoint_scores_stored_decision_result(self) -> None:
         client = TestClient(app)

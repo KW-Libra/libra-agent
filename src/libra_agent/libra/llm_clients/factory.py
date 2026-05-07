@@ -4,11 +4,13 @@ from contextlib import ExitStack
 from typing import Any
 
 from libra_agent.anthropic_client import AnthropicChatClient
+from libra_agent.gemini_client import GeminiChatClient
 from libra_agent.llama_cpp_client import LlamaCppServerClient
 from libra_agent.ollama_client import OllamaChatClient
 
 from ..config import (
     AnthropicBackendConfig,
+    GeminiBackendConfig,
     LlamaCppBackendConfig,
     LibraBackendConfig,
     OllamaBackendConfig,
@@ -25,6 +27,14 @@ def create_chat_client(config: LibraBackendConfig) -> Any:
             model=config.model,
             base_url=config.base_url,
             anthropic_version=config.anthropic_version,
+            max_tokens=config.max_tokens,
+            timeout_seconds=config.timeout_seconds,
+        )
+    if isinstance(config, GeminiBackendConfig):
+        return GeminiChatClient(
+            api_key=config.api_key,
+            model=config.model,
+            base_url=config.base_url,
             max_tokens=config.max_tokens,
             timeout_seconds=config.timeout_seconds,
         )

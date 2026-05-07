@@ -1,4 +1,4 @@
-from .base import AgentBundle
+from .base import AgentBundle, InformationAgentRunRequest
 from .cost_agent import CostAgent
 from .disclosure_agent import DisclosureAgent
 from .evaluation_agent import EvaluationAgent
@@ -9,6 +9,7 @@ from .report_agent import ReportAgent
 
 __all__ = [
     "AgentBundle",
+    "InformationAgentRunRequest",
     "CostAgent",
     "DisclosureAgent",
     "EvaluationAgent",

@@ -102,7 +102,6 @@ Do not invent a custom output shape per teammate.
 
 - owner files:
   - `src/libra_agent/libra/agents/profit_agent.py`
-  - current implementation lives in `src/libra_agent/libra_runtime.py`
 - sample output:
   - `examples/agent-responses/profit.sample.json`
 - responsibility:
@@ -119,7 +118,6 @@ Do not invent a custom output shape per teammate.
 
 - owner files:
   - `src/libra_agent/libra/agents/cost_agent.py`
-  - current implementation lives in `src/libra_agent/libra_runtime.py`
 - sample output:
   - `examples/agent-responses/cost.sample.json`
 - responsibility:

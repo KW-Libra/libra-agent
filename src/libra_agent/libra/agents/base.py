@@ -64,12 +64,45 @@ class AgentBundle:
     profit: TradeAgentProtocol
     cost: TradeAgentProtocol
     evaluation: EvaluationAgentProtocol
+    risk: InformationAgentProtocol | None = None
+    tax: InformationAgentProtocol | None = None
+    compliance: InformationAgentProtocol | None = None
+    macro: InformationAgentProtocol | None = None
+    sentiment: InformationAgentProtocol | None = None
+    execution: InformationAgentProtocol | None = None
+    esg: InformationAgentProtocol | None = None
+
+    def domain_agents(self) -> dict[str, InformationAgentProtocol]:
+        """Return enabled domain agents only."""
+        return {
+            name: agent
+            for name, agent in {
+                "risk": self.risk,
+                "tax": self.tax,
+                "compliance": self.compliance,
+                "macro": self.macro,
+                "sentiment": self.sentiment,
+                "execution": self.execution,
+                "esg": self.esg,
+            }.items()
+            if agent is not None
+        }
+
+
+@dataclass(slots=True)
+class InformationAgentRunRequest:
+    query: str
+    context: str | None
+    fallback: str | None
+    note: str | None
+    depth: str
 
 
 class DelegatingInformationAgent:
     agent_id = ""
     owner_scope = ""
     prompt_profile: "InformationAgentPromptProfile | None" = None
+    owner_task_brief = ""
 
     def __init__(self, *, client: "ChatClientProtocol") -> None:
         from libra_agent.libra_runtime import LLMAgent
@@ -92,7 +125,7 @@ class DelegatingInformationAgent:
         knowledge_base: "LocalKnowledgeBase",
         depth: str = "medium",
     ) -> AgentResponse:
-        return self._implementation.run(
+        request = self.prepare_request(
             query=query,
             context=context,
             fallback=fallback,
@@ -102,18 +135,42 @@ class DelegatingInformationAgent:
             knowledge_base=knowledge_base,
             depth=depth,
         )
+        return self._implementation.run(
+            query=request.query,
+            context=request.context,
+            fallback=request.fallback,
+            note=request.note,
+            turn_number=turn_number,
+            portfolio=portfolio,
+            knowledge_base=knowledge_base,
+            depth=request.depth,
+        )
 
+    def prepare_request(
+        self,
+        *,
+        query: str,
+        context: str | None,
+        fallback: str | None,
+        note: str | None,
+        turn_number: int,
+        portfolio: PortfolioSnapshot,
+        knowledge_base: "LocalKnowledgeBase",
+        depth: str,
+    ) -> InformationAgentRunRequest:
+        del turn_number, portfolio, knowledge_base
+        return InformationAgentRunRequest(
+            query=query,
+            context=context,
+            fallback=fallback,
+            note=self._append_owner_task_brief(note),
+            depth=depth,
+        )
 
-class DelegatingTradeAgent:
-    agent_id = ""
-    owner_scope = ""
-    _implementation_class_name = ""
-
-    def __init__(self) -> None:
-        from libra_agent import libra_runtime
-
-        implementation_class = getattr(libra_runtime, self._implementation_class_name)
-        self._implementation = implementation_class()
-
-    def run(self, **kwargs: object) -> AgentResponse:
-        return self._implementation.run(**kwargs)
+    def _append_owner_task_brief(self, note: str | None) -> str | None:
+        brief = self.owner_task_brief.strip()
+        if not brief:
+            return note
+        if note and note.strip():
+            return f"{note.strip()}\nAgent owner task: {brief}"
+        return f"Agent owner task: {brief}"

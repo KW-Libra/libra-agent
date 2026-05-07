@@ -189,10 +189,28 @@ python -m libra_agent.libra_cli `
 - normalized documents file: `normalized_documents.json` or `normalized_documents.jsonl`
 - portfolio file: `portfolio.sample.json` shape
 
+## Optional Ingest Refresh Tool
+
+By default, `libra-agent` only reads the supplied knowledge cache. For an agentic local run, enable upstream refresh so a sub-agent can call `libra-ingest` when its local evidence is empty:
+
+```powershell
+$env:LIBRA_INGEST_REFRESH_ENABLED = "true"
+$env:LIBRA_INGEST_REFRESH_MODE = "live"   # sample | live
+$env:LIBRA_INGEST_ROOT = "D:\libra-ingest"
+$env:LIBRA_INGEST_OUT_DIR = "D:\libra-data\knowledge\agent_refresh"
+$env:LIBRA_INGEST_RSS_LIMIT = "3"
+$env:LIBRA_INGEST_DART_LIMIT = "5"
+$env:LIBRA_INGEST_REPORT_LIMIT = "0"
+$env:LIBRA_INGEST_SKIP_ARTICLE_BODY = "true"
+```
+
+The information sub-agent then records tool calls such as `ingest.refresh_news`, reloads the generated `events.json` and `normalized_documents.json`, and the LangGraph state carries that refreshed knowledge to later agent turns.
+
 ## Current Scope
 
 - Judge-centered orchestration
 - dynamic sub-agent calling
+- sub-agent observe-act-observe tool loops over local knowledge and optional ingest refresh
 - local LLM runtime via Ollama or `llama.cpp`
 - LangGraph checkpointing
 - structured decision output
@@ -205,7 +223,7 @@ python -m libra_agent.libra_cli `
 - `libra-backend -> libra-agent`
 - `libra-backend -> libra-ingest`
 
-`libra-agent` should receive structured inputs from `libra-backend`, not call product systems directly.
+`libra-agent` should receive structured inputs from `libra-backend` for production. The optional ingest refresh tool is a local/agentic fallback for stale or missing evidence and calls only the `libra-ingest` boundary, not broker or product systems directly.
 
 ## Backend Note
 

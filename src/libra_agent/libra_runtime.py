@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +22,7 @@ from .libra.prompts import (
     get_information_prompt_profile,
 )
 from .libra.constraints import validate_rebalance_plan
+from .libra.direct_indexing import PortfolioDefinition, compact_drift_context
 from .libra.llm_clients.base import ChatClientError, ChatClientProtocol
 from .libra_validation import (
     sanitize_agent_evidence,
@@ -160,6 +164,18 @@ class KnowledgeSlice:
 
 
 @dataclass(slots=True, frozen=True)
+class AgentToolLoopResult:
+    knowledge_slice: KnowledgeSlice
+    stop_reason: str
+
+
+@dataclass(slots=True, frozen=True)
+class IngestRefreshResult:
+    tool_call: ToolCall
+    changed: bool
+
+
+@dataclass(slots=True, frozen=True)
 class PlannedAgentCall:
     agent_id: str
     query: str
@@ -241,6 +257,234 @@ class LocalKnowledgeBase:
             "documents": [document.to_dict() for document in self.documents],
             "source_paths": dict(self.source_paths),
         }
+
+    def refresh_from_ingest(self, *, agent_id: str) -> IngestRefreshResult:
+        agent_id = canonical_agent_id(agent_id)
+        tool_name = f"ingest.refresh_{agent_id}"
+        if not self._ingest_refresh_enabled():
+            return IngestRefreshResult(
+                tool_call=ToolCall(
+                    tool_name=tool_name,
+                    purpose="근거 부족 시 upstream ingest 갱신",
+                    summary="ingest refresh가 비활성화되어 있어 로컬 캐시 안에서만 판단합니다.",
+                ),
+                changed=False,
+            )
+
+        ingest_root = self._resolve_ingest_root()
+        if ingest_root is None:
+            return IngestRefreshResult(
+                tool_call=ToolCall(
+                    tool_name=tool_name,
+                    purpose="근거 부족 시 upstream ingest 갱신",
+                    summary="libra-ingest 루트를 찾지 못해 refresh를 실행하지 못했습니다.",
+                ),
+                changed=False,
+            )
+
+        out_dir = self._ingest_out_dir(agent_id)
+        command = self._ingest_command(agent_id=agent_id, ingest_root=ingest_root, out_dir=out_dir)
+        env = os.environ.copy()
+        src_path = str(ingest_root / "src")
+        env["PYTHONPATH"] = src_path + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=ingest_root,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=self._ingest_timeout_seconds(),
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return IngestRefreshResult(
+                tool_call=ToolCall(
+                    tool_name=tool_name,
+                    purpose="근거 부족 시 upstream ingest 갱신",
+                    summary=f"ingest refresh 실행 실패: {type(exc).__name__}.",
+                ),
+                changed=False,
+            )
+
+        if completed.returncode != 0:
+            stderr = truncate(completed.stderr or completed.stdout or "unknown error", 220)
+            if "Live baseline fetch returned no documents" in (completed.stderr or completed.stdout or ""):
+                return IngestRefreshResult(
+                    tool_call=ToolCall(
+                        tool_name=tool_name,
+                        purpose="근거 부족 시 upstream ingest 갱신",
+                        summary=f"ingest refresh는 실행됐지만 새 문서가 없습니다. out_dir={out_dir}",
+                    ),
+                    changed=False,
+                )
+            return IngestRefreshResult(
+                tool_call=ToolCall(
+                    tool_name=tool_name,
+                    purpose="근거 부족 시 upstream ingest 갱신",
+                    summary=f"ingest refresh가 실패했습니다. exit={completed.returncode}; {stderr}",
+                ),
+                changed=False,
+            )
+
+        refreshed = LocalKnowledgeBase.from_files(
+            events_path=out_dir / "events.json",
+            normalized_documents_path=out_dir / "normalized_documents.json",
+        )
+        if not refreshed.events and not refreshed.documents:
+            return IngestRefreshResult(
+                tool_call=ToolCall(
+                    tool_name=tool_name,
+                    purpose="근거 부족 시 upstream ingest 갱신",
+                    summary=f"ingest refresh는 완료됐지만 새 이벤트나 문서가 없습니다. out_dir={out_dir}",
+                ),
+                changed=False,
+            )
+
+        self._merge_from(refreshed)
+        self.source_paths["last_ingest_refresh_agent"] = agent_id
+        self.source_paths["last_ingest_refresh_out_dir"] = str(out_dir)
+        self.source_paths["events"] = str(out_dir / "events.json")
+        self.source_paths["normalized_documents"] = str(out_dir / "normalized_documents.json")
+        return IngestRefreshResult(
+            tool_call=ToolCall(
+                tool_name=tool_name,
+                purpose="근거 부족 시 upstream ingest 갱신",
+                summary=(
+                    f"ingest refresh 성공. 새 이벤트 {len(refreshed.events)}건, "
+                    f"정규화 문서 {len(refreshed.documents)}건을 로컬 지식 캐시에 병합했습니다."
+                ),
+            ),
+            changed=True,
+        )
+
+    def _merge_from(self, other: LocalKnowledgeBase) -> None:
+        event_ids = {event.event_id or stable_hash(event.to_dict()) for event in self.events}
+        for event in other.events:
+            key = event.event_id or stable_hash(event.to_dict())
+            if key not in event_ids:
+                self.events.append(event)
+                event_ids.add(key)
+
+        document_ids = {document.doc_id or stable_hash(document.to_dict()) for document in self.documents}
+        for document in other.documents:
+            key = document.doc_id or stable_hash(document.to_dict())
+            if key not in document_ids:
+                self.documents.append(document)
+                document_ids.add(key)
+                self.documents_by_id[document.doc_id] = document
+
+    def _ingest_refresh_enabled(self) -> bool:
+        raw = (
+            os.getenv("LIBRA_INGEST_REFRESH_ENABLED")
+            or self.source_paths.get("ingest_refresh_enabled")
+            or "false"
+        )
+        return str(raw).strip().casefold() in {"1", "true", "yes", "y", "on"}
+
+    def _resolve_ingest_root(self) -> Path | None:
+        candidates = [
+            os.getenv("LIBRA_INGEST_ROOT"),
+            self.source_paths.get("ingest_root"),
+            str(Path.cwd().parent / "libra-ingest"),
+            r"D:\libra-ingest",
+        ]
+        for candidate in candidates:
+            if not candidate:
+                continue
+            path = Path(candidate).expanduser()
+            if (path / "src" / "libra_ingest" / "ingest_cli.py").is_file():
+                return path.resolve()
+        return None
+
+    def _ingest_out_dir(self, agent_id: str) -> Path:
+        base = (
+            os.getenv("LIBRA_INGEST_OUT_DIR")
+            or self.source_paths.get("ingest_out_dir")
+            or str(Path("outputs") / "ingest_refresh")
+        )
+        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        return Path(base).expanduser().resolve() / agent_id / timestamp
+
+    def _ingest_timeout_seconds(self) -> float:
+        raw = os.getenv("LIBRA_INGEST_REFRESH_TIMEOUT_SECONDS") or self.source_paths.get("ingest_refresh_timeout_seconds")
+        try:
+            return max(1.0, float(raw)) if raw else 90.0
+        except (TypeError, ValueError):
+            return 90.0
+
+    def _ingest_mode(self) -> str:
+        raw = os.getenv("LIBRA_INGEST_REFRESH_MODE") or self.source_paths.get("ingest_refresh_mode") or "sample"
+        return "live" if str(raw).strip().casefold() == "live" else "sample"
+
+    def _ingest_command(self, *, agent_id: str, ingest_root: Path, out_dir: Path) -> list[str]:
+        command = [
+            os.getenv("LIBRA_INGEST_PYTHON") or sys.executable,
+            "-m",
+            "libra_ingest.ingest_cli",
+            "--out-dir",
+            str(out_dir),
+            "--emit-push-candidates",
+            "--pretty",
+        ]
+        mode = self._ingest_mode()
+        if mode == "live":
+            return [*command, *self._live_ingest_args(agent_id)]
+        return [*command, *self._sample_ingest_args(agent_id, ingest_root)]
+
+    def _sample_ingest_args(self, agent_id: str, ingest_root: Path) -> list[str]:
+        examples = ingest_root / "examples"
+        if agent_id == "disclosure":
+            return ["--dart-records", str(examples / "dart-records.sample.json")]
+        if agent_id == "report":
+            return ["--report-rows", str(examples / "report-rows.sample.json")]
+        return ["--rss-items", str(examples / "rss-items.sample.json")]
+
+    def _live_ingest_args(self, agent_id: str) -> list[str]:
+        rss_limit = self._env_int("LIBRA_INGEST_RSS_LIMIT", "ingest_rss_limit", 5)
+        dart_limit = self._env_int("LIBRA_INGEST_DART_LIMIT", "ingest_dart_limit", 20)
+        report_limit = self._env_int("LIBRA_INGEST_REPORT_LIMIT", "ingest_report_limit", 10)
+        if agent_id == "news":
+            dart_limit = 0
+            report_limit = 0
+        elif agent_id == "disclosure":
+            rss_limit = 0
+            report_limit = 0
+        elif agent_id == "report":
+            rss_limit = 0
+            dart_limit = 0
+        args = [
+            "--live-baseline",
+            "--rss-limit",
+            str(rss_limit),
+            "--dart-limit",
+            str(dart_limit),
+            "--report-limit",
+            str(report_limit),
+            "--report-pdf-pages",
+            str(self._env_int("LIBRA_INGEST_REPORT_PDF_PAGES", "ingest_report_pdf_pages", 5)),
+            "--report-min-body-chars",
+            str(self._env_int("LIBRA_INGEST_REPORT_MIN_BODY_CHARS", "ingest_report_min_body_chars", 500)),
+        ]
+        live_date = os.getenv("LIBRA_INGEST_LIVE_DATE") or self.source_paths.get("ingest_live_date")
+        if live_date:
+            args.extend(["--live-date", str(live_date)])
+        if self._env_bool("LIBRA_INGEST_SKIP_ARTICLE_BODY", "ingest_skip_article_body", default=True):
+            args.append("--skip-article-body")
+        return args
+
+    def _env_int(self, env_key: str, source_key: str, default: int) -> int:
+        raw = os.getenv(env_key) or self.source_paths.get(source_key)
+        try:
+            return max(0, int(float(raw))) if raw is not None else default
+        except (TypeError, ValueError):
+            return default
+
+    def _env_bool(self, env_key: str, source_key: str, *, default: bool) -> bool:
+        raw = os.getenv(env_key) or self.source_paths.get(source_key)
+        if raw is None:
+            return default
+        return str(raw).strip().casefold() in {"1", "true", "yes", "y", "on"}
 
     @staticmethod
     def _read_json(path: str | Path) -> Any:
@@ -387,6 +631,18 @@ class LocalKnowledgeBase:
         if not matches:
             return 0.0
         return clamp(sum(matches) / len(matches), -1.0, 1.0)
+
+    def portfolio_signal_scan(self, portfolio: PortfolioSnapshot) -> tuple[dict[str, float], ToolCall]:
+        signals = {
+            holding.ticker: self.ticker_signal(holding.ticker, portfolio)
+            for holding in portfolio.holdings
+        }
+        non_zero_count = sum(1 for value in signals.values() if abs(value) >= 0.01)
+        return signals, ToolCall(
+            tool_name="local_knowledge.portfolio_signal_scan",
+            purpose="보유 종목별 로컬 이벤트 방향성 재점검",
+            summary=f"보유 종목 {len(signals)}개 중 방향성 신호가 있는 종목 {non_zero_count}개를 확인했습니다.",
+        )
 
     def _filter_events(
         self,
@@ -544,12 +800,14 @@ class LLMAgent:
         knowledge_base: LocalKnowledgeBase,
         depth: str = "medium",
     ) -> AgentResponse:
-        knowledge_slice = knowledge_base.slice_for_agent(
-            agent_id=self.agent_id,
-            portfolio=portfolio,
+        tool_loop = self._run_tool_loop(
             query=query,
+            context=context,
+            portfolio=portfolio,
+            knowledge_base=knowledge_base,
             depth=depth,
         )
+        knowledge_slice = tool_loop.knowledge_slice
         opinion_id = f"{self.agent_id}_{stable_hash({'agent': self.agent_id, 'turn': turn_number, 'query': query})[:12]}"
 
         if not knowledge_slice.events and not knowledge_slice.documents:
@@ -565,8 +823,8 @@ class LLMAgent:
                 strength=0.0,
                 urgency=Urgency.DEFER,
                 confidence=0.2,
-                reasoning_for_judge_agent="이 에이전트가 판단할 관련 로컬 근거가 없습니다.",
-                limits_acknowledged="현재 로컬 캐시에 보유 종목과 일치하는 항목이 없습니다.",
+                reasoning_for_judge_agent="도구 루프를 실행했지만 이 에이전트가 판단할 관련 로컬 근거가 없습니다.",
+                limits_acknowledged=f"현재 로컬 캐시에 보유 종목과 일치하는 항목이 없습니다. stop_reason={tool_loop.stop_reason}",
                 tools_called=knowledge_slice.tools_called,
                 depth_used=depth,
             )
@@ -656,6 +914,190 @@ class LLMAgent:
             depth=depth,
         )
         return response
+
+    def _run_tool_loop(
+        self,
+        *,
+        query: str,
+        context: str | None,
+        portfolio: PortfolioSnapshot,
+        knowledge_base: LocalKnowledgeBase,
+        depth: str,
+    ) -> AgentToolLoopResult:
+        tools_called: list[ToolCall] = [
+            ToolCall(
+                tool_name=f"{self.agent_id}.observe_request",
+                purpose="요청, 포트폴리오, 직전 Judge 맥락 관찰",
+                summary=(
+                    f"보유 종목 {len(portfolio.holdings)}개와 요청 '{truncate(query, 80)}'를 보고 "
+                    f"{self.agent_id} 에이전트가 필요한 근거 조회를 계획했습니다."
+                ),
+            )
+        ]
+        primary = knowledge_base.slice_for_agent(
+            agent_id=self.agent_id,
+            portfolio=portfolio,
+            query=query,
+            depth=depth,
+        )
+        tools_called.extend(primary.tools_called)
+        observed = self._with_tools(primary, tools_called)
+        tools_called.append(
+            ToolCall(
+                tool_name=f"{self.agent_id}.observe_tool_result",
+                purpose="1차 근거 조회 결과 관찰",
+                summary=f"1차 조회 결과 이벤트 {len(observed.events)}건, 문서 {len(observed.documents)}건을 관찰했습니다.",
+            )
+        )
+
+        stop_reason = "primary_evidence_sufficient"
+        if self._should_expand_search(observed, depth=depth):
+            tools_called.append(
+                ToolCall(
+                    tool_name=f"{self.agent_id}.replan_search",
+                    purpose="근거 부족 또는 얕은 조회 결과에 따른 추가 행동 선택",
+                    summary="1차 관찰만으로 충분하지 않아 deep 범위로 같은 책임 영역을 재조회합니다.",
+                )
+            )
+            expanded = knowledge_base.slice_for_agent(
+                agent_id=self.agent_id,
+                portfolio=portfolio,
+                query=self._expanded_query(query=query, context=context),
+                depth="deep",
+            )
+            observed = self._merge_slices(observed, expanded, tools_called + expanded.tools_called)
+            tools_called = observed.tools_called
+            tools_called.append(
+                ToolCall(
+                    tool_name=f"{self.agent_id}.observe_tool_result",
+                    purpose="추가 근거 조회 결과 관찰",
+                    summary=f"추가 조회 후 누적 이벤트 {len(observed.events)}건, 문서 {len(observed.documents)}건을 확보했습니다.",
+                )
+            )
+            observed = self._with_tools(observed, tools_called)
+            stop_reason = "expanded_search_completed"
+
+        if self._should_refresh_ingest(observed):
+            refresh_result = knowledge_base.refresh_from_ingest(agent_id=self.agent_id)
+            tools_called = list(observed.tools_called) + [refresh_result.tool_call]
+            if refresh_result.changed:
+                refreshed_slice = knowledge_base.slice_for_agent(
+                    agent_id=self.agent_id,
+                    portfolio=portfolio,
+                    query=self._expanded_query(query=query, context=context),
+                    depth="deep",
+                )
+                observed = self._merge_slices(observed, refreshed_slice, tools_called + refreshed_slice.tools_called)
+                tools_called = observed.tools_called
+                tools_called.append(
+                    ToolCall(
+                        tool_name=f"{self.agent_id}.observe_ingest_refresh",
+                        purpose="ingest refresh 이후 새 근거 관찰",
+                        summary=(
+                            f"refresh 이후 누적 이벤트 {len(observed.events)}건, "
+                            f"문서 {len(observed.documents)}건을 관찰했습니다."
+                        ),
+                    )
+                )
+                observed = self._with_tools(observed, tools_called)
+                stop_reason = "ingest_refresh_completed"
+            else:
+                observed = self._with_tools(observed, tools_called)
+                stop_reason = "ingest_refresh_unavailable"
+
+        if self._should_scan_portfolio(observed):
+            signals, tool_call = knowledge_base.portfolio_signal_scan(portfolio)
+            tools_called = list(observed.tools_called) + [tool_call]
+            signal_summary = ", ".join(
+                f"{ticker}:{score:.2f}"
+                for ticker, score in signals.items()
+                if abs(score) >= 0.01
+            ) or "뚜렷한 종목별 방향성 없음"
+            tools_called.append(
+                ToolCall(
+                    tool_name=f"{self.agent_id}.observe_portfolio_scan",
+                    purpose="보유 종목 방향성 스캔 결과 관찰",
+                    summary=f"포트폴리오 스캔 관찰 결과: {signal_summary}.",
+                )
+            )
+            observed = self._with_tools(observed, tools_called)
+            stop_reason = "portfolio_scan_completed"
+
+        tools_called = list(observed.tools_called) + [
+            ToolCall(
+                tool_name=f"{self.agent_id}.stop",
+                purpose="하위 에이전트 도구 루프 종료 판단",
+                summary=(
+                    f"stop_reason={stop_reason}; 최종 근거 이벤트 {len(observed.events)}건, "
+                    f"문서 {len(observed.documents)}건으로 Judge에게 응답합니다."
+                ),
+            )
+        ]
+        return AgentToolLoopResult(
+            knowledge_slice=self._with_tools(observed, tools_called),
+            stop_reason=stop_reason,
+        )
+
+    def _should_expand_search(self, knowledge_slice: KnowledgeSlice, *, depth: str) -> bool:
+        if depth == "deep":
+            return False
+        if not knowledge_slice.events and not knowledge_slice.documents:
+            return True
+        if self.agent_id == "report" and not knowledge_slice.documents:
+            return True
+        if self.agent_id == "news" and len(knowledge_slice.events) + len(knowledge_slice.documents) <= 1:
+            return True
+        return False
+
+    def _should_refresh_ingest(self, knowledge_slice: KnowledgeSlice) -> bool:
+        if knowledge_slice.events or knowledge_slice.documents:
+            return False
+        return self.agent_id in {"disclosure", "news", "report"}
+
+    def _should_scan_portfolio(self, knowledge_slice: KnowledgeSlice) -> bool:
+        if knowledge_slice.events or knowledge_slice.documents:
+            return self.agent_id in {"news", "report"}
+        return True
+
+    def _expanded_query(self, *, query: str, context: str | None) -> str:
+        parts = [query]
+        if context:
+            parts.append(context)
+        parts.append("보유 종목 전체 관련 단서")
+        return " | ".join(part for part in parts if part)
+
+    def _with_tools(self, knowledge_slice: KnowledgeSlice, tools_called: list[ToolCall]) -> KnowledgeSlice:
+        return KnowledgeSlice(
+            events=list(knowledge_slice.events),
+            documents=list(knowledge_slice.documents),
+            tools_called=list(tools_called),
+        )
+
+    def _merge_slices(
+        self,
+        first: KnowledgeSlice,
+        second: KnowledgeSlice,
+        tools_called: list[ToolCall],
+    ) -> KnowledgeSlice:
+        events: list[KnowledgeEvent] = []
+        event_ids: set[str] = set()
+        for event in [*first.events, *second.events]:
+            key = event.event_id or stable_hash(event.to_dict())
+            if key in event_ids:
+                continue
+            event_ids.add(key)
+            events.append(event)
+
+        documents: list[KnowledgeDocument] = []
+        document_ids: set[str] = set()
+        for document in [*first.documents, *second.documents]:
+            key = document.doc_id or stable_hash(document.to_dict())
+            if key in document_ids:
+                continue
+            document_ids.add(key)
+            documents.append(document)
+
+        return KnowledgeSlice(events=events, documents=documents, tools_called=list(tools_called))
 
     def _is_low_signal_response(self, response: AgentResponse) -> bool:
         if response.confidence > 0 and response.reasoning_for_judge_agent.strip():
@@ -816,6 +1258,11 @@ class LLMAgent:
             sections.append(f"fallback={fallback}")
         if note:
             sections.append(f"note={note}")
+        sections.append("agent_tool_observations:")
+        sections.extend(
+            f"- {tool.tool_name}: {tool.summary}"
+            for tool in knowledge_slice.tools_called
+        )
         sections.append("portfolio:")
         sections.extend(
             f"- {holding['ticker']} {holding['company_name']} weight={holding['weight']}"
@@ -885,134 +1332,6 @@ class LLMAgent:
         }
 
 
-class DeterministicProfitAgent:
-    agent_id = "profit"
-
-    def run(
-        self,
-        *,
-        query: str,
-        turn_number: int,
-        portfolio: PortfolioSnapshot,
-        knowledge_base: LocalKnowledgeBase,
-        rebalance_plan: dict[str, float],
-    ) -> AgentResponse:
-        del query
-        signals: dict[str, float] = {}
-        gross_change = 0.0
-        plan_score = 0.0
-        for ticker, delta in rebalance_plan.items():
-            signal = knowledge_base.ticker_signal(ticker, portfolio)
-            signals[ticker] = signal
-            gross_change += abs(delta)
-            plan_score += delta * signal
-
-        expected_return_1m = plan_score * 40.0
-        expected_return_3m = plan_score * 65.0
-        sharpe_ratio = plan_score / max(0.05, gross_change * 0.75)
-        max_drawdown = -1.0 * ((gross_change * 10.0) + max(0.0, -plan_score * 35.0))
-        confidence = clamp(0.42 + (len(signals) * 0.08), 0.0, 0.75)
-        recommendation = (
-            "Heuristic v1 simulation suggests modest upside relative to trade size."
-            if plan_score >= 0
-            else "Heuristic v1 simulation suggests the proposed trade is paying for weak expected follow-through."
-        )
-        opinion_id = f"profit_{stable_hash({'turn': turn_number, 'plan': rebalance_plan})[:12]}"
-        return AgentResponse(
-            agent_id=self.agent_id,
-            opinion_id=opinion_id,
-            turn_number=turn_number,
-            query_understood="Evaluate the proposed rebalance plan with a heuristic local simulator.",
-            verdict=AgentVerdict.DIRECT_ANSWER,
-            evidence={
-                "mode": "plan_simulation",
-                "plan_simulation": {
-                    "rebalance_plan": rebalance_plan,
-                    "ticker_signals": signals,
-                    "expected_return_1m": round(expected_return_1m, 3),
-                    "expected_return_3m": round(expected_return_3m, 3),
-                    "sharpe_ratio": round(sharpe_ratio, 3),
-                    "max_drawdown": round(max_drawdown, 3),
-                    "recommendation_text": recommendation,
-                },
-            },
-            direction=clamp(plan_score * 8.0, -1.0, 1.0),
-            strength=clamp(gross_change * 4.0, 0.0, 1.0),
-            urgency=Urgency.SCHEDULED,
-            confidence=confidence,
-            reasoning_for_judge_agent="This is a static-rule simulator. Use it as a relative check on whether the candidate plan improves expected follow-through.",
-            limits_acknowledged="Profit uses a heuristic local signal model, not a calibrated Monte Carlo engine.",
-            tools_called=[
-                ToolCall(
-                    tool_name="local_profit.heuristic_plan_simulation",
-                    purpose="Estimate directional payoff of the candidate rebalance plan",
-                    summary=f"Computed heuristic returns for {len(rebalance_plan)} planned position changes.",
-                )
-            ],
-            depth_used="medium",
-            focus_tickers=sorted(rebalance_plan),
-        )
-
-
-class DeterministicCostAgent:
-    agent_id = "cost"
-
-    def run(
-        self,
-        *,
-        query: str,
-        turn_number: int,
-        portfolio: PortfolioSnapshot,
-        rebalance_plan: dict[str, float],
-    ) -> AgentResponse:
-        del query
-        gross_change = sum(abs(delta) for delta in rebalance_plan.values())
-        reference_value = portfolio.total_value_krw or 100000000.0
-        traded_notional = reference_value * gross_change
-        commission_bp = 1.5
-        sell_tax_bp = 18.0
-        slippage_bp = 6.0 + (gross_change * 100.0)
-        spread_bp = 3.0 + (gross_change * 40.0)
-        sells_notional = reference_value * sum(abs(delta) for delta in rebalance_plan.values() if delta < 0)
-        commission_krw = traded_notional * (commission_bp / 10000.0)
-        tax_krw = sells_notional * (sell_tax_bp / 10000.0)
-        total_friction_bp = commission_bp + slippage_bp + spread_bp + (sell_tax_bp if sells_notional else 0.0)
-        opinion_id = f"cost_{stable_hash({'turn': turn_number, 'plan': rebalance_plan})[:12]}"
-        return AgentResponse(
-            agent_id=self.agent_id,
-            opinion_id=opinion_id,
-            turn_number=turn_number,
-            query_understood="Estimate the execution friction of the candidate rebalance plan.",
-            verdict=AgentVerdict.DIRECT_ANSWER,
-            evidence={
-                "mode": "trade_cost",
-                "trade_cost": {
-                    "rebalance_plan": rebalance_plan,
-                    "commission_krw": round(commission_krw, 0),
-                    "tax_krw": round(tax_krw, 0),
-                    "estimated_slippage_bp": round(slippage_bp, 3),
-                    "spread_state_bp": round(spread_bp, 3),
-                    "total_friction_bp": round(total_friction_bp, 3),
-                },
-            },
-            direction=0.0,
-            strength=0.0,
-            urgency=Urgency.WATCH if total_friction_bp >= 30.0 else Urgency.SCHEDULED,
-            confidence=0.58,
-            reasoning_for_judge_agent="Execution friction is manageable for small reallocations but rises quickly with gross turnover.",
-            limits_acknowledged="Cost uses configurable heuristic basis-point defaults, not live broker fees or orderbook snapshots.",
-            tools_called=[
-                ToolCall(
-                    tool_name="local_cost.heuristic_trade_cost",
-                    purpose="Estimate commission, tax, spread, and slippage",
-                    summary=f"Estimated costs for gross turnover {gross_change:.3f} using local heuristic defaults.",
-                )
-            ],
-            depth_used="medium",
-            focus_tickers=sorted(rebalance_plan),
-        )
-
-
 class JudgeOrchestrator:
     def __init__(self, *, client: ChatClient, checkpoint_path: str | Path | None = None) -> None:
         self.client = client
@@ -1025,6 +1344,7 @@ class JudgeOrchestrator:
         self.profit_agent = agent_bundle.profit
         self.cost_agent = agent_bundle.cost
         self.evaluation_agent = agent_bundle.evaluation
+        self.domain_agents = agent_bundle.domain_agents()
         self.checkpoint_path = Path(checkpoint_path).expanduser() if checkpoint_path else None
         from .libra_graph import LibraLangGraphRuntime
         self._graph_runtime = LibraLangGraphRuntime(self)
@@ -1035,6 +1355,7 @@ class JudgeOrchestrator:
         query: str,
         portfolio: PortfolioSnapshot,
         knowledge_base: LocalKnowledgeBase,
+        portfolio_definition: PortfolioDefinition | None = None,
         depth: str = "medium",
         trigger: str = "pull",
         trigger_event: TriggerEvent | None = None,
@@ -1046,6 +1367,7 @@ class JudgeOrchestrator:
             query=query,
             portfolio=portfolio,
             knowledge_base=knowledge_base,
+            portfolio_definition=portfolio_definition,
             depth=depth,
             trigger=trigger,
             trigger_event=trigger_event,
@@ -1099,64 +1421,8 @@ class JudgeOrchestrator:
             "disclosure": self.disclosure_agent,
             "news": self.news_agent,
             "report": self.report_agent,
+            **self.domain_agents,
         }[agent_id]
-
-    def _build_information_plan(
-        self,
-        *,
-        query: str,
-        depth: str,
-        trigger: str = "pull",
-        trigger_event: TriggerEvent | None = None,
-    ) -> list[PlannedAgentCall]:
-        lowered = query.casefold()
-        urgent_keywords = ("속보", "breaking", "장중", "리콜", "화재", "소송", "규제", "조사")
-        report_keywords = ("리포트", "report", "컨센서스", "목표주가", "사업부")
-        disclosure_keywords = ("공시", "dart", "잠정", "실적", "감사보고서")
-        trigger_context = self._trigger_context_text(trigger_event)
-
-        if trigger == "push":
-            order = ("news", "disclosure", "report")
-        elif any(token in lowered for token in urgent_keywords):
-            order = ("news", "disclosure", "report")
-        elif any(token in lowered for token in report_keywords):
-            order = ("report", "news", "disclosure")
-        elif any(token in lowered for token in disclosure_keywords):
-            order = ("disclosure", "news", "report")
-        else:
-            order = ("disclosure", "news", "report")
-
-        plan: list[PlannedAgentCall] = []
-        for agent_id in order:
-            planned_depth = depth
-            context_parts: list[str] = []
-            fallback: str | None = None
-            note: str | None = None
-            if trigger_context:
-                context_parts.append(trigger_context)
-            if agent_id == "news":
-                agent_query = "포트폴리오 관련 뉴스, 시장 반응, 필요시 매크로 배경을 요약해줘."
-                if trigger == "push":
-                    planned_depth = "deep"
-                    note = "Judge wants to know whether the signal is structural or temporary."
-                fallback = "Focus on market reaction, cross-checks, and whether the headline changes the thesis."
-            elif agent_id == "disclosure":
-                agent_query = "포트폴리오 관련 신규 공시와 실적 신호를 요약해줘."
-                fallback = "Focus on filing relevance, earnings signals, and upcoming scheduled disclosures."
-            else:
-                agent_query = "포트폴리오 관련 증권사 리포트와 컨센서스 변화, 사업부 단서를 요약해줘."
-                fallback = "Focus on target-price revisions, consensus drift, and business-unit commentary."
-            plan.append(
-                PlannedAgentCall(
-                    agent_id=agent_id,
-                    query=agent_query,
-                    context=" | ".join(part for part in context_parts if part) or query,
-                    depth=planned_depth,
-                    fallback=fallback,
-                    note=note,
-                )
-            )
-        return plan
 
     def _should_skip_agent(
         self,
@@ -1322,13 +1588,19 @@ class JudgeOrchestrator:
         if action not in {"CALL_AGENT", "FINALIZE"}:
             return None
         response_map = {canonical_agent_id(item.agent_id): item for item in responses}
+        raw_candidate_plan = payload.get("candidate_rebalance_plan")
+        incoming_candidate_plan = (
+            raw_candidate_plan
+            if isinstance(raw_candidate_plan, Mapping) and raw_candidate_plan
+            else candidate_plan
+        )
         normalized_plan = self._draft_candidate_plan(
             query=query,
             portfolio=portfolio,
             responses=responses,
             trigger=trigger,
             trigger_event=trigger_event,
-            candidate_plan=payload.get("candidate_rebalance_plan") if isinstance(payload.get("candidate_rebalance_plan"), Mapping) else candidate_plan,
+            candidate_plan=incoming_candidate_plan,
             allow_inference=False,
         )
         result: dict[str, Any] = {
@@ -1359,15 +1631,16 @@ class JudgeOrchestrator:
                 if preferred_push_agent is None:
                     return {
                         "action": "FINALIZE",
-                        "reason": "Push pre-screen already gives Judge enough context for a final decision.",
+                        "reason": "속보 트리거에 사전 확인과 시장 반응이 포함되어 추가 정보 수집 없이 최종 판단으로 이동합니다.",
                         "candidate_rebalance_plan": normalized_plan,
                     }
                 agent_id = preferred_push_agent
                 action_depth = "medium"
         if trigger == "pull" and not called_set:
-            query_lower = query.casefold()
-            if agent_id != "disclosure" and not any(
-                token in query_lower for token in ("속보", "장중", "breaking", "급락", "급등")
+            if (
+                agent_id != "disclosure"
+                and not self._is_explicit_news_request(query)
+                and not self._is_explicit_report_request(query)
             ):
                 agent_id = "disclosure"
                 action_depth = depth
@@ -1394,7 +1667,7 @@ class JudgeOrchestrator:
             ):
                 return {
                     "action": "FINALIZE",
-                    "reason": "Disclosure and News were sufficient for this turn, so extra collection is not justified.",
+                    "reason": "공시와 뉴스 관찰만으로 이번 판단에 필요한 정보가 충분해 추가 수집을 중단합니다.",
                     "candidate_rebalance_plan": normalized_plan,
                 }
         agent_overridden = agent_id != original_agent_id
@@ -1486,7 +1759,7 @@ class JudgeOrchestrator:
             if push_next == "cost":
                 return {
                     "action": "CALL_AGENT",
-                    "reason": "Push wake-up already has pre-screening, so Judge checks execution friction first.",
+                    "reason": "속보 사전 점검으로 후보 초안이 생겼으므로 실행 마찰을 먼저 확인합니다.",
                     "agent_id": "cost",
                     "query": self._default_agent_query(agent_id="cost", trigger=trigger, responses=responses),
                     "context": self._default_agent_context(
@@ -1511,7 +1784,7 @@ class JudgeOrchestrator:
             if push_next == "profit":
                 return {
                     "action": "CALL_AGENT",
-                    "reason": "Push wake-up starts with evaluating whether the draft defensive rebalance is worth doing.",
+                    "reason": "속보로 방어적 리밸런싱 초안이 생겼으므로 기대수익과 위험을 먼저 확인합니다.",
                     "agent_id": "profit",
                     "query": self._default_agent_query(agent_id="profit", trigger=trigger, responses=responses),
                     "context": self._default_agent_context(
@@ -1535,14 +1808,50 @@ class JudgeOrchestrator:
                 }
             return {
                 "action": "FINALIZE",
-                "reason": "Push-triggered sequence already has enough pre-screening and execution context.",
+                "reason": "속보 트리거와 실행 검토만으로 현재 판단에 필요한 맥락이 충분합니다.",
                 "candidate_rebalance_plan": normalized_plan,
             }
 
-        if "disclosure" not in called:
+        if not called:
+            agent_id = self._initial_pull_agent(query)
+            reason_by_agent = {
+                "disclosure": "사용자 요청이 일반 포트폴리오 점검이므로 판단 에이전트가 원천 정보인 공시부터 확인합니다.",
+                "news": "사용자 요청이 속보나 시장 반응 확인이므로 판단 에이전트가 뉴스부터 확인합니다.",
+                "report": "사용자 요청이 리포트나 컨센서스 확인이므로 판단 에이전트가 리포트부터 확인합니다.",
+            }
             return {
                 "action": "CALL_AGENT",
-                "reason": "Regular checks begin with a disclosure and earnings scan.",
+                "reason": reason_by_agent[agent_id],
+                "agent_id": agent_id,
+                "query": self._default_agent_query(agent_id=agent_id, trigger=trigger, responses=responses),
+                "context": self._default_agent_context(
+                    agent_id=agent_id,
+                    query=query,
+                    responses=responses,
+                    trigger_event=trigger_event,
+                    candidate_plan=normalized_plan,
+                ),
+                "depth": depth,
+                "fallback": self._default_agent_fallback(agent_id=agent_id, trigger=trigger),
+                "note": self._default_agent_note(
+                    agent_id=agent_id,
+                    query=query,
+                    responses=responses,
+                    trigger=trigger,
+                    trigger_event=trigger_event,
+                    candidate_plan=normalized_plan,
+                ),
+                "candidate_rebalance_plan": normalized_plan,
+            }
+
+        if (
+            "disclosure" not in called
+            and not self._is_explicit_news_request(query)
+            and not self._is_explicit_report_request(query)
+        ):
+            return {
+                "action": "CALL_AGENT",
+                "reason": "정기 점검인데 아직 공시 관찰이 없어 투자 가정 변화 여부를 먼저 확인해야 합니다.",
                 "agent_id": "disclosure",
                 "query": self._default_agent_query(agent_id="disclosure", trigger=trigger, responses=responses),
                 "context": self._default_agent_context(
@@ -1573,7 +1882,7 @@ class JudgeOrchestrator:
             )
             return {
                 "action": "CALL_AGENT",
-                "reason": "After disclosure, Judge checks whether the signal is structural, transient, or already priced.",
+                "reason": "공시 관찰 뒤 신호가 구조적인지, 일시적인지, 이미 가격에 반영됐는지 확인합니다.",
                 "agent_id": "news",
                 "query": self._default_agent_query(
                     agent_id="news",
@@ -1612,7 +1921,7 @@ class JudgeOrchestrator:
         ):
             return {
                 "action": "FINALIZE",
-                "reason": "Disclosure and News were enough for this turn, so Judge stops here.",
+                "reason": "공시와 뉴스 관찰만으로 이번 판단에는 충분해 여기서 추가 호출을 멈춥니다.",
                 "candidate_rebalance_plan": normalized_plan,
             }
 
@@ -1624,7 +1933,7 @@ class JudgeOrchestrator:
         ):
             return {
                 "action": "CALL_AGENT",
-                "reason": "Need sell-side interpretation or business-segment decomposition before deciding.",
+                "reason": "공시와 뉴스 신호만으로는 해석이 부족해 증권사 해석이나 사업부 단서를 확인합니다.",
                 "agent_id": "report",
                 "query": self._default_agent_query(agent_id="report", trigger=trigger, responses=responses),
                 "context": self._default_agent_context(
@@ -1650,7 +1959,7 @@ class JudgeOrchestrator:
         if normalized_plan and "profit" not in called:
             return {
                 "action": "CALL_AGENT",
-                "reason": "A draft rebalance exists, so Judge asks Profit to test expected payoff and risk.",
+                "reason": "후보 리밸런싱 초안이 있으므로 기대수익과 위험 관점의 검토가 필요합니다.",
                 "agent_id": "profit",
                 "query": self._default_agent_query(agent_id="profit", trigger=trigger, responses=responses),
                 "context": self._default_agent_context(
@@ -1676,7 +1985,7 @@ class JudgeOrchestrator:
         if normalized_plan and "cost" not in called:
             return {
                 "action": "CALL_AGENT",
-                "reason": "Judge still needs cost and liquidity before committing to the draft plan.",
+                "reason": "후보 초안을 실행하기 전에 거래비용, 슬리피지, 유동성을 확인해야 합니다.",
                 "agent_id": "cost",
                 "query": self._default_agent_query(agent_id="cost", trigger=trigger, responses=responses),
                 "context": self._default_agent_context(
@@ -1701,7 +2010,7 @@ class JudgeOrchestrator:
 
         return {
             "action": "FINALIZE",
-            "reason": "Current observations are sufficient for a final Judge decision.",
+            "reason": "현재 관찰만으로 최종 판단을 내릴 수 있어 추가 에이전트를 호출하지 않습니다.",
             "candidate_rebalance_plan": normalized_plan,
         }
 
@@ -1821,6 +2130,20 @@ class JudgeOrchestrator:
     def _is_explicit_report_request(self, query: str) -> bool:
         lowered = query.casefold()
         return any(token in lowered for token in ("리포트", "report", "컨센서스", "증권사", "목표주가"))
+
+    def _is_explicit_news_request(self, query: str) -> bool:
+        lowered = query.casefold()
+        return any(
+            token in lowered
+            for token in ("뉴스", "기사", "보도", "속보", "장중", "시장 반응", "breaking", "headline", "급락", "급등")
+        )
+
+    def _initial_pull_agent(self, query: str) -> str:
+        if self._is_explicit_news_request(query):
+            return "news"
+        if self._is_explicit_report_request(query):
+            return "report"
+        return "disclosure"
 
     def _should_attempt_plan_inference(
         self,
@@ -2046,6 +2369,7 @@ class JudgeOrchestrator:
         responses: list[AgentResponse],
         run_state: RunState,
         candidate_plan: Mapping[str, float] | None = None,
+        judge_actions: list[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         normalized_plan = dict(candidate_plan or {})
         summary = "분석 deadline을 넘겨 자동 판단보다 사용자 확인이 우선인 상태로 전환합니다."
@@ -2092,6 +2416,7 @@ class JudgeOrchestrator:
         decision.decision_trace = self._decision_trace(
             query=query,
             executed_calls=executed_calls,
+            judge_actions=judge_actions,
             responses=responses,
             decision=decision,
         )
@@ -2202,6 +2527,8 @@ class JudgeOrchestrator:
         portfolio: PortfolioSnapshot,
         responses: list[AgentResponse],
         stage: str,
+        candidate_plan: Mapping[str, float] | None = None,
+        drift_report: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         response_payloads = [self._compact_agent_response(response) for response in responses]
         prompt = json.dumps(
@@ -2220,6 +2547,10 @@ class JudgeOrchestrator:
                     "user_preferences": list(portfolio.user_preferences[:4]),
                 },
                 "agent_responses": response_payloads,
+                "direct_indexing": self._compact_direct_indexing_context(
+                    candidate_plan=candidate_plan,
+                    drift_report=drift_report,
+                ),
                 "instructions": {
                     "required_keys": JUDGE_PHASE_REQUIRED_KEYS,
                     "decision_values": [item.value for item in DecisionType],
@@ -2231,6 +2562,8 @@ class JudgeOrchestrator:
                         "Keep summary concise and write all natural-language text only in Korean.",
                         "Do not use Japanese kana in summary, reasoning, notifications, or options.",
                         "If no trade is justified, return an empty candidate_rebalance_plan object.",
+                        "A direct_indexing candidate_rebalance_plan is a target-vs-current drift draft, not a free-form heuristic.",
+                        "If a direct_indexing candidate plan exists and profit/cost agents did not block it, REBALANCE may be justified even when disclosure/news are quiet.",
                     ],
                 },
             },
@@ -2245,11 +2578,38 @@ class JudgeOrchestrator:
                 temperature=0.0,
             )
         except ChatClientError:
-            return self._fallback_judge_payload(query=query, portfolio=portfolio, responses=responses, stage=stage)
+            return self._fallback_judge_payload(
+                query=query,
+                portfolio=portfolio,
+                responses=responses,
+                stage=stage,
+                candidate_plan=candidate_plan,
+                drift_report=drift_report,
+            )
         payload = sanitize_judge_payload(payload, portfolio=portfolio, stage=stage)
         if self._is_low_signal_judge_payload(payload) or self._judge_payload_has_unsupported_language(payload):
-            return self._fallback_judge_payload(query=query, portfolio=portfolio, responses=responses, stage=stage)
+            return self._fallback_judge_payload(
+                query=query,
+                portfolio=portfolio,
+                responses=responses,
+                stage=stage,
+                candidate_plan=candidate_plan,
+                drift_report=drift_report,
+            )
         return payload
+
+    def _compact_direct_indexing_context(
+        self,
+        *,
+        candidate_plan: Mapping[str, float] | None,
+        drift_report: Mapping[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not candidate_plan and not drift_report:
+            return None
+        return {
+            "candidate_rebalance_plan": dict(candidate_plan or {}),
+            "drift": compact_drift_context(drift_report),
+        }
 
     def _compact_agent_response(self, response: AgentResponse) -> dict[str, Any]:
         evidence = response.evidence
@@ -2363,13 +2723,15 @@ class JudgeOrchestrator:
         executed_calls: list[PlannedAgentCall],
         responses: list[AgentResponse],
         decision: JudgeDecision,
+        judge_actions: list[Mapping[str, Any]] | None = None,
     ) -> list[DecisionTraceNode]:
         trace: list[DecisionTraceNode] = []
-        for index, response in enumerate(responses):
-            planned_call = executed_calls[index] if index < len(executed_calls) else None
+        response_index = 0
+
+        def append_agent_response(response: AgentResponse, planned_call: PlannedAgentCall | None) -> None:
             trace.append(
                 DecisionTraceNode(
-                    turn_number=response.turn_number,
+                    turn_number=len(trace) + 1,
                     phase=DecisionPhase.INFORMATION_GATHERING if response.agent_id in {"disclosure", "news", "report"} else DecisionPhase.DELIBERATION,
                     actor=response.agent_id,
                     query=planned_call.query if planned_call else query,
@@ -2380,6 +2742,58 @@ class JudgeOrchestrator:
                     tools_called=tuple(response.tools_called),
                 )
             )
+
+        for action in judge_actions or []:
+            action_name = str(action.get("action") or "").strip().upper()
+            agent_id = str(action.get("agent_id") or "").strip()
+            reason = str(action.get("reason") or "").strip()
+            candidate_plan = action.get("candidate_rebalance_plan", {})
+            called_before = action.get("called_agents_before", [])
+            called_before_text = ", ".join(str(item) for item in called_before) if called_before else "없음"
+            if action_name == "CALL_AGENT" and agent_id:
+                summary = f"Judge가 현재 관찰을 바탕으로 {agent_id} 에이전트만 호출하기로 결정했습니다."
+                routing_query = f"다음 호출 결정: {agent_id}"
+            else:
+                summary = "Judge가 추가 호출 없이 최종 판단으로 이동하기로 결정했습니다."
+                routing_query = "추가 호출 여부 판단"
+            if reason:
+                summary = f"{summary} 이유: {reason}"
+            if isinstance(candidate_plan, Mapping) and candidate_plan:
+                summary = f"{summary} 후보 리밸런싱 초안: {dict(candidate_plan)}"
+            trace.append(
+                DecisionTraceNode(
+                    turn_number=len(trace) + 1,
+                    phase=DecisionPhase.DELIBERATION,
+                    actor="judge",
+                    query=routing_query,
+                    summary=summary,
+                    context=f"호출 전 완료 에이전트: {called_before_text}",
+                )
+            )
+            if action_name == "CALL_AGENT" and response_index < len(responses):
+                response = responses[response_index]
+                planned_call = executed_calls[response_index] if response_index < len(executed_calls) else None
+                append_agent_response(response, planned_call)
+                response_index += 1
+
+        for index in range(response_index, len(responses)):
+            response = responses[index]
+            planned_call = executed_calls[index] if index < len(executed_calls) else None
+            append_agent_response(response, planned_call)
+        domain_consensus = (
+            dict(decision.auto_safeguards.get("domain_consensus", {}))
+            if isinstance(decision.auto_safeguards.get("domain_consensus"), Mapping)
+            else {}
+        )
+        domain_suffix = ""
+        if domain_consensus:
+            domain_suffix = (
+                f" 도메인 합의 점수 {float(domain_consensus.get('score') or 0.0):.2f}, "
+                f"approve {domain_consensus.get('n_approve', 0)}, reject {domain_consensus.get('n_reject', 0)}, "
+                f"abstain {domain_consensus.get('n_abstain', 0)}."
+            )
+            if domain_consensus.get("compliance_veto"):
+                domain_suffix += " Compliance 거부권이 적용되었습니다."
         trace.append(
             DecisionTraceNode(
                 turn_number=len(trace) + 1,
@@ -2389,6 +2803,7 @@ class JudgeOrchestrator:
                 summary=(
                     f"합의 점수 {decision.consensus_score:.2f}, 충돌 점수 {decision.divergence_score:.2f}, "
                     f"후보 리밸런싱 초안 {decision.candidate_rebalance_plan or '{}'}."
+                    f"{domain_suffix}"
                 ),
             )
         )
@@ -2431,9 +2846,66 @@ class JudgeOrchestrator:
         portfolio: PortfolioSnapshot,
         responses: list[AgentResponse],
         stage: str,
+        candidate_plan: Mapping[str, float] | None = None,
+        drift_report: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        del portfolio, stage
+        del stage
         consensus, divergence = self._consensus_metrics(responses)
+        direct_plan = self._sanitize_plan(candidate_plan, portfolio) if isinstance(candidate_plan, Mapping) else {}
+        called = {canonical_agent_id(response.agent_id) for response in responses}
+        direct_context = compact_drift_context(drift_report)
+
+        if direct_plan and {"profit", "cost"}.issubset(called):
+            max_drift = 0.0
+            threshold = 0.0
+            if direct_context is not None:
+                max_drift = float(direct_context.get("portfolio_drift_max") or 0.0)
+                threshold = float(direct_context.get("threshold") or 0.0)
+            drift_text = (
+                f"최대 편차 {max_drift:.1%}가 임계치 {threshold:.1%}를 넘어"
+                if max_drift and threshold
+                else "목표비중과 현재비중의 차이가 확인되어"
+            )
+            return {
+                "decision": DecisionType.REBALANCE.value,
+                "summary": f"{drift_text} 후보 리밸런싱 초안을 사용자 승인 단계로 올립니다.",
+                "confidence": 0.72,
+                "urgency": Urgency.SCHEDULED.value,
+                "reasoning": (
+                    "초기 설정 목표비중과 현재 포트폴리오 비중의 편차로 후보 리밸런싱 초안이 생성되었고, "
+                    "수익 관점과 비용 관점 검토가 모두 decision trace에 포함되었습니다."
+                ),
+                "candidate_rebalance_plan": direct_plan,
+                "needs_trade_evaluation": True,
+                "follow_up_at": None,
+                "feedback_checkpoint": self._default_feedback_checkpoint(),
+                "user_notification": {
+                    "level": "info",
+                    "body": f"{drift_text} 리밸런싱 초안을 준비했습니다. 실행 전 주문 내역을 확인하세요.",
+                    "action_required": False,
+                },
+            }
+
+        if direct_plan:
+            missing = ["profit" if "profit" not in called else "", "cost" if "cost" not in called else ""]
+            missing_text = ", ".join(item for item in missing if item) or "추가"
+            return {
+                "decision": DecisionType.DEFER.value,
+                "summary": "후보 리밸런싱 초안은 있지만 실행 전 검토가 아직 끝나지 않았습니다.",
+                "confidence": 0.62,
+                "urgency": Urgency.DEFER.value,
+                "reasoning": f"목표비중 편차 기반 초안이 있으나 {missing_text} 검토가 완료되지 않았습니다.",
+                "candidate_rebalance_plan": direct_plan,
+                "needs_trade_evaluation": True,
+                "follow_up_at": self._default_follow_up_at(query=query, responses=responses),
+                "feedback_checkpoint": None,
+                "user_notification": {
+                    "level": "info",
+                    "body": "리밸런싱 초안 검토를 이어갑니다.",
+                    "action_required": False,
+                },
+            }
+
         ticker_votes: dict[str, float] = {}
         for response in responses:
             if not response.focus_tickers or response.agent_id == "cost":

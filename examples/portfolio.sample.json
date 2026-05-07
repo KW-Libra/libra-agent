@@ -7,13 +7,23 @@
       "ticker": "005930",
       "company_name": "삼성전자",
       "weight": 0.4,
-      "aliases": ["Samsung Electronics", "005930.KS"]
+      "aliases": ["Samsung Electronics", "005930.KS", "KRX:005930"],
+      "shares": 100,
+      "last_price": 65000,
+      "average_price": 60000,
+      "market_value_krw": 6500000,
+      "unrealized_pnl_krw": 500000
     },
     {
       "ticker": "000660",
       "company_name": "SK하이닉스",
       "weight": 0.25,
-      "aliases": ["SK hynix", "000660.KS"]
+      "aliases": ["SK hynix", "000660.KS", "KRX:000660"],
+      "shares": 50,
+      "last_price": 150000,
+      "average_price": 140000,
+      "market_value_krw": 7500000,
+      "unrealized_pnl_krw": 500000
     },
     {
       "ticker": "005380",
