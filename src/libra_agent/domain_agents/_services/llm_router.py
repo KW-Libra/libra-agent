@@ -146,7 +146,7 @@ class LLMRouter:
         return preferred
 
     def model_name_for(self, agent_id: str) -> str:
-        return self._select_model(agent_id).value
+        return self._model_name(self._select_model(agent_id))
 
     # ── 메인 호출 API ───────────────────────────────────────────
 
@@ -169,7 +169,7 @@ class LLMRouter:
             cross_validate: True이면 Gemini + Claude 모두 호출 후 합의 (할루시네이션 방지)
         """
         model = self._select_model(agent_id)
-        logger.debug(f"[LLMRouter] {agent_id} → {model.value}")
+        logger.debug(f"[LLMRouter] {agent_id} → {self._model_name(model)}")
 
         primary = self._call_model(model, system, user, max_tokens)
 
@@ -206,14 +206,27 @@ class LLMRouter:
         user: str,
         max_tokens: int,
     ) -> str:
+        model_name = self._model_name(model)
         try:
             if model in (LLMModel.CLAUDE_HAIKU, LLMModel.CLAUDE_SONNET):
-                return self._call_claude(model.value, system, user, max_tokens)
+                return self._call_claude(model_name, system, user, max_tokens)
             else:
-                return self._call_gemini(model.value, system, user, max_tokens)
+                return self._call_gemini(model_name, system, user, max_tokens)
         except Exception as e:
-            logger.error(f"[LLMRouter] {model.value} 호출 실패: {e}")
-            raise RuntimeError(f"{model.value} LLM 호출 실패: {e}") from e
+            logger.error(f"[LLMRouter] {model_name} 호출 실패: {e}")
+            raise RuntimeError(f"{model_name} LLM 호출 실패: {e}") from e
+
+    def _model_name(self, model: LLMModel) -> str:
+        if model == LLMModel.GEMINI_FLASH:
+            return (
+                os.environ.get("LIBRA_DOMAIN_GEMINI_MODEL")
+                or os.environ.get("LIBRA_GEMINI_MODEL")
+                or os.environ.get("GEMINI_MODEL")
+                or model.value
+            )
+        if model == LLMModel.GEMINI_PRO:
+            return os.environ.get("LIBRA_DOMAIN_GEMINI_PRO_MODEL") or model.value
+        return model.value
 
     def _call_claude(self, model: str, system: str, user: str, max_tokens: int) -> str:
         if not self._claude:

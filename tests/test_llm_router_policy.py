@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 
 from libra_agent.domain_agents.base import PortfolioContext
@@ -84,6 +85,14 @@ class LLMRouterPolicyTests(unittest.TestCase):
         router = FakeRouter(policy="gemini")
 
         self.assertEqual(router.model_name_for("tax"), LLMModel.GEMINI_FLASH.value)
+
+    def test_model_name_for_honors_gemini_model_override(self) -> None:
+        os.environ["LIBRA_DOMAIN_GEMINI_MODEL"] = "gemini-2.5-flash-lite"
+        self.addCleanup(os.environ.pop, "LIBRA_DOMAIN_GEMINI_MODEL", None)
+
+        router = FakeRouter(policy="gemini")
+
+        self.assertEqual(router.model_name_for("tax"), "gemini-2.5-flash-lite")
 
     def test_tax_agent_uses_context_router_and_records_actual_model(self) -> None:
         router = RecordingRouter()

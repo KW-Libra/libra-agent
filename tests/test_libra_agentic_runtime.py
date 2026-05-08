@@ -70,6 +70,32 @@ class RoutingScriptChatClient:
         return None
 
 
+class RepairingRoutingChatClient:
+    model = "repairing-routing-test"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def chat_json(self, **kwargs: object) -> dict[str, object]:
+        self.calls += 1
+        user_prompt = str(kwargs.get("user_prompt") or "")
+        if '"invalid_response"' in user_prompt:
+            return {
+                "action": "CALL_AGENT",
+                "agent_id": "news",
+                "reason": "거래 초안 없이 profit 호출은 부적절하므로 시장 반응을 먼저 확인합니다.",
+            }
+        return {
+            "action": "CALL_AGENT",
+            "agent_id": "profit",
+            "reason": "거래 초안 없이 수익성을 검토하려 했습니다.",
+            "candidate_rebalance_plan": {},
+        }
+
+    def ensure_available(self) -> None:
+        return None
+
+
 class DomainLLMRouter:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -391,6 +417,25 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
         self.assertEqual(action["action"], "CALL_AGENT")
         self.assertEqual(action["agent_id"], "risk")
         self.assertEqual(action["layer"], "domain")
+
+    def test_judge_routing_repairs_invalid_trade_review_without_plan(self) -> None:
+        client = RepairingRoutingChatClient()
+        orchestrator = JudgeOrchestrator(client=client)
+
+        action = orchestrator._judge_next_action(
+            query="포트폴리오 점검",
+            portfolio=_portfolio(),
+            responses=[],
+            called_agents=[],
+            depth="medium",
+            trigger="pull",
+            trigger_event=None,
+            candidate_plan=None,
+        )
+
+        self.assertEqual(action["action"], "CALL_AGENT")
+        self.assertEqual(action["agent_id"], "news")
+        self.assertEqual(client.calls, 2)
 
     def test_direct_indexing_definition_creates_plan_and_trade_reviews(self) -> None:
         orchestrator = JudgeOrchestrator(

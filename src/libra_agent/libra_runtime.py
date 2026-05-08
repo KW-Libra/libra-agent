@@ -132,7 +132,25 @@ def normalize_ticker(value: str) -> str:
 
 
 def canonical_agent_id(value: str) -> str:
-    normalized = value.strip().casefold()
+    normalized = str(value).strip().casefold()
+    compact = normalized.replace("_", "").replace("-", "").replace(" ", "")
+    aliases = {
+        "dart": "disclosure",
+        "disclosureagent": "disclosure",
+        "newsagent": "news",
+        "reportagent": "report",
+        "profitagent": "profit",
+        "costagent": "cost",
+        "riskagent": "risk",
+        "taxagent": "tax",
+        "complianceagent": "compliance",
+        "macroagent": "macro",
+        "sentimentagent": "sentiment",
+        "executionagent": "execution",
+        "esgagent": "esg",
+    }
+    if compact in aliases:
+        return aliases[compact]
     if normalized == "dart":
         return "disclosure"
     return normalized
@@ -885,6 +903,13 @@ class LLMAgent:
                 "events": [event.to_dict() for event in knowledge_slice.events[:4]],
                 "documents": [document.to_dict() for document in knowledge_slice.documents[:3]],
             }
+        if (
+            response.confidence <= 0
+            and response.reasoning_for_judge_agent.strip()
+            and self._has_substantive_evidence(response.evidence)
+        ):
+            # A zero confidence with cited evidence is a malformed scalar, not an LLM outage.
+            response.confidence = 0.35
         if not response.focus_tickers:
             focus_tickers = set()
             for event in knowledge_slice.events:
@@ -1097,6 +1122,18 @@ class LLMAgent:
         if response.verdict not in {AgentVerdict.PARTIAL_ANSWER, AgentVerdict.DIRECT_ANSWER_UNAVAILABLE, AgentVerdict.QUIET}:
             return False
         return True
+
+    def _has_substantive_evidence(self, evidence: Mapping[str, Any]) -> bool:
+        if not isinstance(evidence, Mapping):
+            return False
+        found_count = evidence.get("found_count")
+        if isinstance(found_count, (int, float)) and found_count > 0:
+            return True
+        for key in ("items", "events", "documents", "reports", "company_findings", "source_documents"):
+            value = evidence.get(key)
+            if isinstance(value, list) and value:
+                return True
+        return False
 
     def _system_prompt(self) -> str:
         return self.prompt_profile.system_prompt
@@ -1405,6 +1442,12 @@ class JudgeOrchestrator:
                 "agent_values": list(self._routing_agent_ids()),
                 "depth_values": ["shallow", "medium", "deep"],
                 "rules": JUDGE_ACTION_RULES,
+                "validator_contract": [
+                    "agent_id must be one of the exact lowercase agent_values.",
+                    "CALL_AGENT profit or cost is rejected when candidate_rebalance_plan is empty.",
+                    "candidate_rebalance_plan must use portfolio tickers with nonzero weight deltas.",
+                    "If no safe next agent is justified, use FINALIZE.",
+                ],
             },
         }
         system_prompt = JUDGE_ACTION_SYSTEM_PROMPT
@@ -1428,8 +1471,53 @@ class JudgeOrchestrator:
             candidate_plan=candidate_plan,
         )
         if normalized is None:
+            raw = self._repair_judge_action(raw, context_payload=payload)
+            normalized = self._normalize_judge_action(
+                raw,
+                query=query,
+                portfolio=portfolio,
+                responses=responses,
+                called_agents=called_agents,
+                depth=depth,
+                trigger=trigger,
+                trigger_event=trigger_event,
+                candidate_plan=candidate_plan,
+            )
+        if normalized is None:
             raise ChatClientError("Judge routing LLM returned an invalid or unsafe next action.")
         return normalized
+
+    def _repair_judge_action(
+        self,
+        invalid_payload: Mapping[str, Any],
+        *,
+        context_payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        repair_payload = {
+            "invalid_response": dict(invalid_payload),
+            "validator_error": (
+                "The previous action was rejected by LIBRA's safety validator. "
+                "Return a corrected JSON action only; do not explain outside JSON."
+            ),
+            "repair_rules": [
+                "Use action CALL_AGENT or FINALIZE only.",
+                "Use exact lowercase agent_id values from instructions.agent_values.",
+                "Do not call an already-called agent.",
+                "CALL_AGENT profit or cost is invalid if candidate_rebalance_plan is empty.",
+                "If you want profit or cost, include a concrete nonempty candidate_rebalance_plan with portfolio tickers and nonzero weight deltas.",
+                "If no valid trade-review action exists, call news/report when justified or choose FINALIZE.",
+            ],
+            "state": context_payload,
+        }
+        try:
+            return self.client.chat_json(
+                system_prompt=JUDGE_ACTION_SYSTEM_PROMPT
+                + " The previous JSON was rejected by the validator; repair it into a valid safe action.",
+                user_prompt=json.dumps(repair_payload, ensure_ascii=False, separators=(",", ":")),
+                temperature=0.0,
+            )
+        except ChatClientError as exc:
+            raise ChatClientError("Judge routing LLM repair failed; deterministic routing fallback is disabled.") from exc
 
     def _domain_next_action(
         self,

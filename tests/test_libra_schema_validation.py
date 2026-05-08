@@ -124,6 +124,46 @@ class LibraSchemaValidationTests(unittest.TestCase):
         self.assertEqual(response.strength, 1.0)
         self.assertIsNone(response.limits_acknowledged)
 
+    def test_llm_agent_repairs_zero_confidence_when_evidence_is_cited(self) -> None:
+        agent = LLMAgent(
+            agent_id="disclosure",
+            client=FakeChatClient(
+                {
+                    "verdict": "PARTIAL_ANSWER",
+                    "evidence": {
+                        "found_count": 1,
+                        "items": [
+                            {
+                                "ticker": "005930",
+                                "type": "분기보고서",
+                                "summary": "삼성전자 분기보고서 공시가 확인되었습니다.",
+                                "date": "20260402",
+                            }
+                        ],
+                    },
+                    "direction": 0.0,
+                    "strength": 0.0,
+                    "urgency": "defer",
+                    "confidence": 0.0,
+                    "reasoning_for_judge_agent": "삼성전자 분기보고서 공시가 확인되었지만 방향성 판단은 보류합니다.",
+                    "limits_acknowledged": "공시 본문만 확인되어 투자 방향성은 제한적입니다.",
+                    "references": [],
+                    "focus_tickers": ["005930"],
+                }
+            ),
+        )
+
+        response = agent.run(
+            query="삼성전자 공시를 요약해줘.",
+            turn_number=1,
+            portfolio=_portfolio(),
+            knowledge_base=_knowledge_base_with_disclosure(),
+            depth="shallow",
+        )
+
+        self.assertEqual(response.verdict, AgentVerdict.PARTIAL_ANSWER)
+        self.assertEqual(response.confidence, 0.35)
+
     def test_judge_payload_sanitizer_normalizes_defaults(self) -> None:
         payload = sanitize_judge_payload(
             {
@@ -266,6 +306,31 @@ class LibraSchemaValidationTests(unittest.TestCase):
             normalized["note"],
             "판단 에이전트는 공시 내용이 시장 시각을 바꿨는지, 이미 가격에 반영됐는지 확인합니다.",
         )
+
+    def test_judge_action_normalization_accepts_class_style_agent_ids(self) -> None:
+        orchestrator = JudgeOrchestrator(client=FakeChatClient({}))
+
+        normalized = orchestrator._normalize_judge_action(
+            {
+                "action": "CALL_AGENT",
+                "agent_id": "DisclosureAgent",
+                "reason": "최신 공시 확인",
+                "query": "보유 종목 공시 확인",
+                "depth": "medium",
+            },
+            query="포트폴리오 점검",
+            portfolio=_portfolio(),
+            responses=[],
+            called_agents=[],
+            depth="medium",
+            trigger="pull",
+            trigger_event=None,
+            candidate_plan=None,
+        )
+
+        self.assertIsNotNone(normalized)
+        assert normalized is not None
+        self.assertEqual(normalized["agent_id"], "disclosure")
 
 
 if __name__ == "__main__":
