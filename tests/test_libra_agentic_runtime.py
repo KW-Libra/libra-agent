@@ -17,8 +17,6 @@ from libra_agent.libra.evaluation import evaluate_decision_outcome
 from libra_agent.libra.signals import infer_signal_profile
 from libra_agent.libra_runtime import JudgeOrchestrator, LLMAgent, LocalKnowledgeBase
 from libra_agent.libra_models import AgentResponse, AgentVerdict, PortfolioSnapshot, Urgency
-from libra_agent.utils import contains_japanese_kana
-
 
 class FakeChatClient:
     def __init__(self, payload: dict[str, object]) -> None:
@@ -37,6 +35,103 @@ class FailingChatClient:
 
     def ensure_available(self) -> None:
         return None
+
+
+class RoutingScriptChatClient:
+    model = "scripted-agentic-test"
+
+    def __init__(
+        self,
+        *,
+        core_actions: list[dict[str, object]],
+        domain_actions: list[dict[str, object]] | None = None,
+        final_payload: dict[str, object] | None = None,
+    ) -> None:
+        self.core_actions = list(core_actions)
+        self.domain_actions = list(domain_actions or [])
+        self.final_payload = dict(final_payload or _hold_final_payload())
+
+    def chat_json(self, **kwargs: object) -> dict[str, object]:
+        system_prompt = str(kwargs.get("system_prompt") or "")
+        user_prompt = str(kwargs.get("user_prompt") or "")
+        if "FINALIZE_DOMAIN_REVIEW" in user_prompt or system_prompt.startswith("You are the LIBRA Judge orchestrating the domain council layer"):
+            if not self.domain_actions:
+                raise ChatClientError("domain routing script exhausted")
+            return dict(self.domain_actions.pop(0))
+        if '"action_values":["CALL_AGENT","FINALIZE"]' in user_prompt:
+            if not self.core_actions:
+                raise ChatClientError("core routing script exhausted")
+            return dict(self.core_actions.pop(0))
+        if '"required_keys"' in user_prompt or "Decide among HOLD, DEFER, USER_DECISION_REQUIRED, REBALANCE" in system_prompt:
+            return dict(self.final_payload)
+        raise ChatClientError("subagent LLM intentionally offline in orchestration test")
+
+    def ensure_available(self) -> None:
+        return None
+
+
+class DomainLLMRouter:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def ask(self, *, agent_id: str, **_: object) -> str:
+        self.calls.append(agent_id)
+        if agent_id == "sentiment":
+            return '{"sentiment_score": 0.15, "vote": "approve", "rationale": "테스트 도메인 LLM 응답"}'
+        return "테스트 도메인 LLM 응답. 판단: approve."
+
+    def model_name_for(self, agent_id: str) -> str:
+        return f"test-domain-{agent_id}"
+
+
+def _call(agent_id: str, reason: str = "LLM이 다음 호출 대상을 선택했습니다.") -> dict[str, object]:
+    return {"action": "CALL_AGENT", "agent_id": agent_id, "reason": reason}
+
+
+def _finalize(reason: str = "LLM이 현재 관찰로 충분하다고 판단했습니다.") -> dict[str, object]:
+    return {"action": "FINALIZE", "reason": reason}
+
+
+def _domain_call(agent_id: str, reason: str = "LLM이 도메인 심의 대상을 선택했습니다.") -> dict[str, object]:
+    return {"action": "CALL_AGENT", "agent_id": agent_id, "reason": reason}
+
+
+def _domain_done(reason: str = "LLM이 도메인 심의를 마치기로 했습니다.") -> dict[str, object]:
+    return {"action": "FINALIZE_DOMAIN_REVIEW", "reason": reason}
+
+
+def _domain_script() -> list[dict[str, object]]:
+    return [_domain_call(agent_id) for agent_id in ("risk", "tax", "compliance", "macro", "sentiment", "execution", "esg")] + [_domain_done()]
+
+
+def _hold_final_payload() -> dict[str, object]:
+    return {
+        "decision": "HOLD",
+        "summary": "현재 관찰만으로는 포트폴리오를 변경하지 않습니다.",
+        "confidence": 0.71,
+        "urgency": "defer",
+        "reasoning": "Judge LLM이 Core 관찰과 Domain Council 심의를 종합해 유지 결정을 내렸습니다.",
+        "candidate_rebalance_plan": {},
+        "needs_trade_evaluation": False,
+        "follow_up_at": None,
+        "feedback_checkpoint": None,
+        "user_notification": {"level": "silent", "body": "현재 포트폴리오를 유지합니다.", "action_required": False},
+    }
+
+
+def _rebalance_final_payload() -> dict[str, object]:
+    return {
+        "decision": "REBALANCE",
+        "summary": "목표비중 편차가 커 후보 리밸런싱 초안을 승인 단계로 올립니다.",
+        "confidence": 0.78,
+        "urgency": "scheduled",
+        "reasoning": "Judge LLM이 목표비중 편차, Profit 검토, Cost 검토, Domain Council 심의를 종합했습니다.",
+        "candidate_rebalance_plan": {"005930": 0.1, "000660": 0.1},
+        "needs_trade_evaluation": True,
+        "follow_up_at": None,
+        "feedback_checkpoint": None,
+        "user_notification": {"level": "info", "body": "리밸런싱 초안을 확인하세요.", "action_required": False},
+    }
 
 
 def _portfolio() -> PortfolioSnapshot:
@@ -157,7 +252,7 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
         self.assertEqual(result.verdict, "BLOCKED")
         self.assertIsNone(result.cost_efficiency)
 
-    def test_empty_regular_scan_finalizes_without_report_collection(self) -> None:
+    def test_core_normalization_preserves_llm_report_choice(self) -> None:
         orchestrator = JudgeOrchestrator(
             client=FakeChatClient(
                 {
@@ -214,11 +309,23 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
             candidate_plan=None,
         )
 
-        self.assertEqual(action["action"], "FINALIZE")
+        self.assertEqual(action["action"], "CALL_AGENT")
+        self.assertEqual(action["agent_id"], "report")
         self.assertEqual(action["candidate_rebalance_plan"], {})
 
     def test_langgraph_trace_starts_with_judge_and_interleaves_routing(self) -> None:
-        orchestrator = JudgeOrchestrator(client=FailingChatClient())
+        orchestrator = JudgeOrchestrator(
+            client=RoutingScriptChatClient(
+                core_actions=[
+                    _call("disclosure", "정기 점검의 1차 근거로 공시를 확인합니다."),
+                    _call("news", "공시 이후 시장 반응을 확인합니다."),
+                    _finalize("Core 관찰이 충분해 도메인 심의로 이동합니다."),
+                ],
+                domain_actions=_domain_script(),
+                final_payload=_hold_final_payload(),
+            )
+        )
+        orchestrator.domain_router = DomainLLMRouter()
 
         result = orchestrator.run(
             query="포트폴리오 정기 점검",
@@ -286,7 +393,20 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
         self.assertEqual(action["layer"], "domain")
 
     def test_direct_indexing_definition_creates_plan_and_trade_reviews(self) -> None:
-        orchestrator = JudgeOrchestrator(client=FailingChatClient())
+        orchestrator = JudgeOrchestrator(
+            client=RoutingScriptChatClient(
+                core_actions=[
+                    _call("disclosure", "목표비중 판단 전 공시를 확인합니다."),
+                    _call("news", "시장 반응을 확인합니다."),
+                    _call("profit", "후보 리밸런싱의 기대수익을 검토합니다."),
+                    _call("cost", "후보 리밸런싱의 실행비용을 검토합니다."),
+                    _finalize("Core 검토가 끝나 도메인 심의로 이동합니다."),
+                ],
+                domain_actions=_domain_script(),
+                final_payload=_rebalance_final_payload(),
+            )
+        )
+        orchestrator.domain_router = DomainLLMRouter()
 
         result = orchestrator.run(
             query="초기 설정 목표비중 기준으로 리밸런싱 판단해줘",
@@ -401,7 +521,22 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
         self.assertIn("새 문서가 없습니다", result.tool_call.summary)
         self.assertNotIn("Traceback", result.tool_call.summary)
 
-    def test_judge_phase_falls_back_on_japanese_kana(self) -> None:
+    def test_judge_routing_fails_when_llm_is_unavailable(self) -> None:
+        orchestrator = JudgeOrchestrator(client=FailingChatClient())
+
+        with self.assertRaises(ChatClientError):
+            orchestrator._judge_next_action(
+                query="포트폴리오 점검",
+                portfolio=_portfolio(),
+                responses=[],
+                called_agents=[],
+                depth="medium",
+                trigger="pull",
+                trigger_event=None,
+                candidate_plan=None,
+            )
+
+    def test_judge_phase_rejects_japanese_kana_payload(self) -> None:
         orchestrator = JudgeOrchestrator(
             client=FakeChatClient(
                 {
@@ -417,15 +552,13 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
             )
         )
 
-        payload = orchestrator._judge_phase(
-            query="포트폴리오 점검",
-            portfolio=_portfolio(),
-            responses=[],
-            stage="final",
-        )
-
-        self.assertFalse(contains_japanese_kana(payload["summary"]))
-        self.assertFalse(contains_japanese_kana(payload["reasoning"]))
+        with self.assertRaises(ChatClientError):
+            orchestrator._judge_phase(
+                query="포트폴리오 점검",
+                portfolio=_portfolio(),
+                responses=[],
+                stage="final",
+            )
 
     def test_local_knowledge_base_loads_ingest_event_wrapper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

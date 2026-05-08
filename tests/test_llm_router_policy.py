@@ -59,12 +59,12 @@ class LLMRouterPolicyTests(unittest.TestCase):
         self.assertEqual(result, "gemini answer")
         self.assertEqual(router.calls, [("gemini", LLMModel.GEMINI_FLASH.value)])
 
-    def test_gemini_policy_does_not_fallback_to_claude(self) -> None:
+    def test_gemini_policy_fails_without_provider_fallback(self) -> None:
         router = FailingGeminiRouter(policy="gemini")
 
-        result = router.ask(agent_id="macro", system="system", user="user")
+        with self.assertRaises(RuntimeError):
+            router.ask(agent_id="macro", system="system", user="user")
 
-        self.assertIn("[LLM 오류]", result)
         self.assertEqual(router.calls, [("gemini", LLMModel.GEMINI_FLASH.value)])
 
     def test_balanced_cross_validation_keeps_model_labels_correct(self) -> None:

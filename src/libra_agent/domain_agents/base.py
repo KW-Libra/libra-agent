@@ -191,12 +191,12 @@ class BaseAgent(ABC):
         ctx: PortfolioContext | None = None,
     ) -> str:
         """
-        [Deprecated] 기존 코드 호환용. _ask_llm()으로 위임하여 정책·폴백 완전 지원.
+        [Deprecated] 기존 코드 호환용. _ask_llm()으로 위임하여 정책 기반 라우팅을 사용.
         신규 코드는 _ask_llm() 사용 권장.
 
         변경: 이전에는 router._call_claude()를 직접 호출하여 사용자가 Gemini-only
         정책을 설정했을 때 RuntimeError가 발생했음. 이제 _ask_llm()을 경유하므로
-        라우터의 폴백 로직과 사용자별 ctx.router를 모두 올바르게 활용함.
+        사용자별 ctx.router와 명시된 라우팅 정책을 올바르게 활용함.
         """
         logger.debug(f"[{self.agent_id}] _ask_claude() → _ask_llm() 위임 (policy-aware)")
         rationale, _ = self._ask_llm(system=system, user=user, max_tokens=1024, ctx=ctx)

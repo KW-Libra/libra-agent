@@ -14,7 +14,7 @@ LLM Router — Claude + Gemini 멀티 LLM 라우터
 
 API 키 소스 (우선순위):
   1. 사용자별 DB 키 (llm_credentials 테이블) — 동적으로 주입
-  2. 환경 변수 ANTHROPIC_API_KEY / GEMINI_API_KEY — 시스템 폴백
+  2. 환경 변수 ANTHROPIC_API_KEY / GEMINI_API_KEY — 시스템 키
 
 비용 비교 (2024 기준, 1M token):
   Claude Haiku    $0.25 input / $1.25 output
@@ -68,7 +68,7 @@ class LLMRouter:
 
     API 키 우선순위:
       1. 생성자에 직접 주입 (anthropic_key / gemini_key) — 사용자 DB 키
-      2. 환경 변수 ANTHROPIC_API_KEY / GEMINI_API_KEY — 시스템 폴백
+      2. 환경 변수 ANTHROPIC_API_KEY / GEMINI_API_KEY — 시스템 키
 
     사용법:
         # 사용자별 키 사용 (권장)
@@ -80,7 +80,7 @@ class LLMRouter:
                 policy=keys.llm_policy,
             )
 
-        # 환경 변수 폴백
+        # 환경 변수 시스템 키
         router = LLMRouter()
         result = router.ask(agent_id="macro", system="...", user="...")
     """
@@ -141,21 +141,8 @@ class LLMRouter:
         if self._policy == "gemini":
             return LLMModel.GEMINI_FLASH
 
-        # balanced: 에이전트별 최적 배정, 폴백 처리
+        # balanced: 에이전트별 최적 배정
         preferred = AGENT_MODEL_MAP.get(agent_id, LLMModel.CLAUDE_HAIKU)
-
-        # Gemini 모델인데 클라이언트 없으면 Claude로 폴백
-        if preferred in (LLMModel.GEMINI_FLASH, LLMModel.GEMINI_PRO):
-            if not self._gemini:
-                logger.warning(f"[LLMRouter] {agent_id}: Gemini 불가 → Claude Haiku 폴백")
-                return LLMModel.CLAUDE_HAIKU if self._claude else preferred
-
-        # Claude 모델인데 클라이언트 없으면 Gemini로 폴백
-        if preferred in (LLMModel.CLAUDE_HAIKU, LLMModel.CLAUDE_SONNET):
-            if not self._claude:
-                logger.warning(f"[LLMRouter] {agent_id}: Claude 불가 → Gemini Flash 폴백")
-                return LLMModel.GEMINI_FLASH if self._gemini else preferred
-
         return preferred
 
     def model_name_for(self, agent_id: str) -> str:
@@ -226,22 +213,7 @@ class LLMRouter:
                 return self._call_gemini(model.value, system, user, max_tokens)
         except Exception as e:
             logger.error(f"[LLMRouter] {model.value} 호출 실패: {e}")
-            if self._policy != "balanced":
-                return f"[LLM 오류] {str(e)[:100]}"
-            # 폴백: 반대 LLM 시도
-            fallback = (
-                LLMModel.GEMINI_FLASH
-                if model in (LLMModel.CLAUDE_HAIKU, LLMModel.CLAUDE_SONNET)
-                else LLMModel.CLAUDE_HAIKU
-            )
-            try:
-                logger.warning(f"[LLMRouter] {fallback.value}로 폴백")
-                if fallback in (LLMModel.CLAUDE_HAIKU, LLMModel.CLAUDE_SONNET):
-                    return self._call_claude(fallback.value, system, user, max_tokens)
-                return self._call_gemini(fallback.value, system, user, max_tokens)
-            except Exception as e2:
-                logger.error(f"[LLMRouter] 폴백도 실패: {e2}")
-                return f"[LLM 오류] {str(e)[:100]}"
+            raise RuntimeError(f"{model.value} LLM 호출 실패: {e}") from e
 
     def _call_claude(self, model: str, system: str, user: str, max_tokens: int) -> str:
         if not self._claude:
@@ -330,12 +302,12 @@ class LLMRouter:
             )
 
 
-# ── 팩토리: 사용자 DB 키 우선, env 폴백 ──────────────────────────
+# ── 팩토리: 사용자 DB 키 우선, env 시스템 키 ────────────────────
 
 async def build_router_for_user(user_id: str) -> LLMRouter:
     """
     사용자 DB 키로 LLMRouter를 생성합니다.
-    DB 키가 없거나 오류 시 환경 변수 폴백으로 동작합니다.
+    DB 키가 없거나 오류 시 환경 변수 시스템 키로 동작합니다.
 
     Args:
         user_id: Supabase auth.users.id
@@ -354,7 +326,7 @@ async def build_router_for_user(user_id: str) -> LLMRouter:
                 policy=user_keys.llm_policy,
             )
     except Exception as e:
-        logger.warning(f"[LLMRouter] user={user_id[:8]}...: DB 키 로드 실패, env 폴백 — {e}")
+        logger.warning(f"[LLMRouter] user={user_id[:8]}...: DB 키 로드 실패, env 시스템 키 사용 — {e}")
 
     logger.info(f"[LLMRouter] user={user_id[:8]}...: 환경 변수 키 사용")
     return LLMRouter()

@@ -868,15 +868,8 @@ class LLMAgent:
                 opinion_id=opinion_id,
                 depth=depth,
             )
-        except (ChatClientError, ValueError, TypeError):
-            response = self._fallback_response(
-                query=query,
-                turn_number=turn_number,
-                knowledge_slice=knowledge_slice,
-                depth=depth,
-                opinion_id=opinion_id,
-                failure_reason="Structured agent generation failed for this turn.",
-            )
+        except (ChatClientError, ValueError, TypeError) as exc:
+            raise ChatClientError(f"{self.agent_id} agent LLM failed; local deterministic response fallback is disabled.") from exc
 
         response.agent_id = self.agent_id
         response.opinion_id = response.opinion_id or opinion_id
@@ -900,14 +893,7 @@ class LLMAgent:
                 focus_tickers.update(document.matched_holdings)
             response.focus_tickers = sorted(focus_tickers)
         if self._is_low_signal_response(response):
-            response = self._fallback_response(
-                query=query,
-                turn_number=turn_number,
-                knowledge_slice=knowledge_slice,
-                depth=depth,
-                opinion_id=response.opinion_id,
-                failure_reason="Local LLM response was too sparse to trust.",
-            )
+            raise ChatClientError(f"{self.agent_id} agent LLM returned a sparse or untrustworthy response.")
         response = sanitize_agent_response_payload(
             response.to_dict(),
             agent_id=self.agent_id,
@@ -1112,128 +1098,6 @@ class LLMAgent:
             return False
         return True
 
-    def _fallback_response(
-        self,
-        *,
-        query: str,
-        turn_number: int,
-        knowledge_slice: KnowledgeSlice,
-        depth: str,
-        opinion_id: str,
-        failure_reason: str,
-    ) -> AgentResponse:
-        event_scores = [event_direction_score(event) for event in knowledge_slice.events]
-        avg_score = sum(event_scores) / len(event_scores) if event_scores else 0.0
-        confidence = clamp(0.35 + (0.05 * min(len(knowledge_slice.events), 5)) + (0.03 * min(len(knowledge_slice.documents), 5)), 0.0, 0.72)
-        strength = clamp(abs(avg_score) + (0.04 * min(len(knowledge_slice.events), 3)), 0.0, 1.0)
-        urgency = Urgency.WATCH if abs(avg_score) >= 0.25 else Urgency.DEFER
-        focus_tickers = sorted({ticker for event in knowledge_slice.events for ticker in event.matched_holdings} | {ticker for document in knowledge_slice.documents for ticker in document.matched_holdings})
-        evidence = self._fallback_evidence(knowledge_slice)
-        reasoning = self._fallback_reasoning(knowledge_slice, avg_score)
-        return AgentResponse(
-            agent_id=self.agent_id,
-            opinion_id=opinion_id,
-            turn_number=turn_number,
-            query_understood=query,
-            verdict=AgentVerdict.PARTIAL_ANSWER,
-            evidence=evidence,
-            direction=clamp(avg_score, -1.0, 1.0),
-            strength=strength,
-            urgency=urgency,
-            confidence=confidence,
-            reasoning_for_judge_agent=reasoning,
-            limits_acknowledged=failure_reason,
-            tools_called=knowledge_slice.tools_called,
-            depth_used=depth,
-            focus_tickers=focus_tickers,
-        )
-
-    def _fallback_reasoning(self, knowledge_slice: KnowledgeSlice, avg_score: float) -> str:
-        if self.agent_id == "disclosure":
-            return f"Local disclosure fallback found {len(knowledge_slice.documents)} disclosure docs and {len(knowledge_slice.events)} related events; directional score {avg_score:.2f}."
-        if self.agent_id == "report":
-            return f"Local report fallback summarized {len(knowledge_slice.documents)} report docs; directional score {avg_score:.2f}."
-        return f"Local news fallback summarized {len(knowledge_slice.events)} events and {len(knowledge_slice.documents)} news docs; directional score {avg_score:.2f}."
-
-    def _fallback_evidence(self, knowledge_slice: KnowledgeSlice) -> dict[str, Any]:
-        if self.agent_id == "disclosure":
-            items = []
-            for document in knowledge_slice.documents[:4]:
-                items.append(
-                    {
-                        "ticker": next(iter(document.matched_holdings), None),
-                        "company_name": None,
-                        "disclosure_type": document.title,
-                        "headline": document.title,
-                        "timestamp": document.published_at.isoformat(),
-                        "summary": truncate(document.body, 240),
-                    }
-                )
-            return {
-                "found_count": len(knowledge_slice.documents),
-                "items": items,
-                "upcoming_disclosures": [],
-            }
-        if self.agent_id == "report":
-            items = []
-            for document in knowledge_slice.documents[:4]:
-                items.append(
-                    {
-                        "broker": document.publisher,
-                        "published_at": document.published_at.isoformat(),
-                        "report_type": "coverage",
-                        "key_thesis": truncate(document.body, 220),
-                        "matched_holdings": list(document.matched_holdings),
-                    }
-                )
-            return {
-                "coverage_reports_count": len(knowledge_slice.documents),
-                "preview_reports_count": 0,
-                "items": items,
-                "consensus": None,
-            }
-        sub_role = "company_specific"
-        if any(event.event_type == "MACRO" for event in knowledge_slice.events):
-            sub_role = "mixed" if any(event.matched_holdings for event in knowledge_slice.events) else "macro"
-        unique_sources = {
-            document.source_name for document in knowledge_slice.documents
-        } | {
-            source_name
-            for event in knowledge_slice.events
-            for source_name in event.metadata.get("source_names", [])
-            if isinstance(event.metadata.get("source_names"), list)
-        }
-        company_findings: dict[str, Any] = {}
-        for event in knowledge_slice.events[:6]:
-            for ticker in event.matched_holdings or ("portfolio",):
-                company_findings.setdefault(
-                    ticker,
-                    {
-                        "sentiment": "neutral",
-                        "key_headlines": [],
-                        "market_reaction": None,
-                        "sector_comparison": None,
-                    },
-                )
-                company_findings[ticker]["key_headlines"].append(event.headline)
-        for ticker, payload in company_findings.items():
-            joined = " ".join(payload["key_headlines"]).casefold()
-            positive_hits = sum(1 for token in POSITIVE_KEYWORDS if token in joined)
-            negative_hits = sum(1 for token in NEGATIVE_KEYWORDS if token in joined)
-            if positive_hits > negative_hits:
-                payload["sentiment"] = "positive"
-            elif negative_hits > positive_hits:
-                payload["sentiment"] = "negative"
-            elif positive_hits or negative_hits:
-                payload["sentiment"] = "mixed"
-        return {
-            "sub_role": sub_role,
-            "company_findings": company_findings,
-            "macro_findings": None,
-            "source_reliability": "medium",
-            "cross_check_count": len(unique_sources) or len(knowledge_slice.events),
-        }
-
     def _system_prompt(self) -> str:
         return self.prompt_profile.system_prompt
 
@@ -1349,6 +1213,7 @@ class JudgeOrchestrator:
         self.cost_agent = agent_bundle.cost
         self.evaluation_agent = agent_bundle.evaluation
         self.domain_agents = agent_bundle.domain_agents()
+        self.domain_router = None
         self.checkpoint_path = Path(checkpoint_path).expanduser() if checkpoint_path else None
         from .libra_graph import LibraLangGraphRuntime
         self._graph_runtime = LibraLangGraphRuntime(self)
@@ -1549,17 +1414,8 @@ class JudgeOrchestrator:
                 user_prompt=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
                 temperature=0.0,
             )
-        except ChatClientError:
-            return self._fallback_judge_action(
-                query=query,
-                portfolio=portfolio,
-                responses=responses,
-                called_agents=called_agents,
-                depth=depth,
-                trigger=trigger,
-                trigger_event=trigger_event,
-                candidate_plan=candidate_plan,
-            )
+        except ChatClientError as exc:
+            raise ChatClientError("Judge routing LLM failed; deterministic routing fallback is disabled.") from exc
         normalized = self._normalize_judge_action(
             raw,
             query=query,
@@ -1572,16 +1428,7 @@ class JudgeOrchestrator:
             candidate_plan=candidate_plan,
         )
         if normalized is None:
-            return self._fallback_judge_action(
-                query=query,
-                portfolio=portfolio,
-                responses=responses,
-                called_agents=called_agents,
-                depth=depth,
-                trigger=trigger,
-                trigger_event=trigger_event,
-                candidate_plan=candidate_plan,
-            )
+            raise ChatClientError("Judge routing LLM returned an invalid or unsafe next action.")
         return normalized
 
     def _domain_next_action(
@@ -1641,17 +1488,8 @@ class JudgeOrchestrator:
                 user_prompt=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
                 temperature=0.0,
             )
-        except ChatClientError:
-            return self._fallback_domain_action(
-                query=query,
-                portfolio=portfolio,
-                responses=responses,
-                called_agents=called_agents,
-                depth=depth,
-                trigger=trigger,
-                trigger_event=trigger_event,
-                candidate_plan=candidate_plan,
-            )
+        except ChatClientError as exc:
+            raise ChatClientError("Domain council routing LLM failed; deterministic routing fallback is disabled.") from exc
         normalized = self._normalize_domain_action(
             raw,
             query=query,
@@ -1664,16 +1502,7 @@ class JudgeOrchestrator:
             candidate_plan=candidate_plan,
         )
         if normalized is None:
-            return self._fallback_domain_action(
-                query=query,
-                portfolio=portfolio,
-                responses=responses,
-                called_agents=called_agents,
-                depth=depth,
-                trigger=trigger,
-                trigger_event=trigger_event,
-                candidate_plan=candidate_plan,
-            )
+            raise ChatClientError("Domain council routing LLM returned an invalid or unsafe next action.")
         return normalized
 
     def _normalize_judge_action(
@@ -1692,7 +1521,6 @@ class JudgeOrchestrator:
         action = str(payload.get("action", "")).strip().upper()
         if action not in {"CALL_AGENT", "FINALIZE"}:
             return None
-        response_map = {canonical_agent_id(item.agent_id): item for item in responses}
         raw_candidate_plan = payload.get("candidate_rebalance_plan")
         incoming_candidate_plan = (
             raw_candidate_plan
@@ -1700,13 +1528,10 @@ class JudgeOrchestrator:
             else candidate_plan
         )
         normalized_plan = self._draft_candidate_plan(
-            query=query,
             portfolio=portfolio,
-            responses=responses,
             trigger=trigger,
             trigger_event=trigger_event,
             candidate_plan=incoming_candidate_plan,
-            allow_inference=False,
         )
         result: dict[str, Any] = {
             "action": action,
@@ -1723,62 +1548,16 @@ class JudgeOrchestrator:
         called_set = {canonical_agent_id(item) for item in called_agents}
         if agent_id in called_set:
             return None
-        original_agent_id = agent_id
         action_depth = str(payload.get("depth", depth)).strip().lower()
         if action_depth not in {"shallow", "medium", "deep"}:
             action_depth = depth
-        if trigger == "push" and self._push_prescreen_is_sufficient(trigger_event):
-            if agent_id in {"disclosure", "news", "report"}:
-                preferred_push_agent = self._next_push_agent(
-                    called_agents=called_set,
-                    trigger_event=trigger_event,
-                    candidate_plan=normalized_plan,
-                )
-                if preferred_push_agent is None:
-                    return {
-                        "action": "FINALIZE",
-                        "reason": "속보 트리거에 사전 확인과 시장 반응이 포함되어 추가 정보 수집 없이 최종 판단으로 이동합니다.",
-                        "candidate_rebalance_plan": normalized_plan,
-                    }
-                agent_id = preferred_push_agent
-                action_depth = "medium"
-        if trigger == "pull" and "disclosure" in called_set and "news" not in called_set and agent_id == "report":
-            query_lower = query.casefold()
-            if not any(token in query_lower for token in ("리포트", "report", "컨센서스")):
-                agent_id = "news"
-                action_depth = self._recommended_news_depth(
-                    default_depth=depth,
-                    disclosure_response=next(
-                        (item for item in responses if canonical_agent_id(item.agent_id) == "disclosure"),
-                        None,
-                    ),
-                )
-        if trigger == "pull" and agent_id in CORE_ROUTING_AGENT_IDS and {"disclosure", "news"}.issubset(called_set):
-            disclosure_response = response_map.get("disclosure")
-            news_response = response_map.get("news")
-            if self._should_finalize_after_basic_scan(
-                query=query,
-                depth=depth,
-                disclosure_response=disclosure_response,
-                news_response=news_response,
-                candidate_plan=normalized_plan,
-            ):
-                return {
-                    "action": "FINALIZE",
-                    "reason": "공시와 뉴스 관찰만으로 이번 판단에 필요한 정보가 충분해 추가 수집을 중단합니다.",
-                    "candidate_rebalance_plan": normalized_plan,
-                }
-        agent_overridden = agent_id != original_agent_id
 
         if agent_id in {"profit", "cost"} and not normalized_plan:
             normalized_plan = self._draft_candidate_plan(
-                query=query,
                 portfolio=portfolio,
-                responses=responses,
                 trigger=trigger,
                 trigger_event=trigger_event,
                 candidate_plan=candidate_plan,
-                allow_inference=False,
             )
             if not normalized_plan:
                 return None
@@ -1836,13 +1615,10 @@ class JudgeOrchestrator:
         if action not in {"CALL_AGENT", "FINALIZE_DOMAIN_REVIEW"}:
             return None
         normalized_plan = self._draft_candidate_plan(
-            query=query,
             portfolio=portfolio,
-            responses=responses,
             trigger=trigger,
             trigger_event=trigger_event,
             candidate_plan=candidate_plan,
-            allow_inference=False,
         )
         result: dict[str, Any] = {
             "action": action,
@@ -1893,366 +1669,13 @@ class JudgeOrchestrator:
         )
         return result
 
-    def _fallback_domain_action(
-        self,
-        *,
-        query: str,
-        portfolio: PortfolioSnapshot,
-        responses: list[AgentResponse],
-        called_agents: list[str],
-        depth: str,
-        trigger: str,
-        trigger_event: TriggerEvent | None,
-        candidate_plan: Mapping[str, float] | None,
-    ) -> dict[str, Any]:
-        del depth
-        called = {canonical_agent_id(item) for item in called_agents}
-        normalized_plan = self._draft_candidate_plan(
-            query=query,
-            portfolio=portfolio,
-            responses=responses,
-            trigger=trigger,
-            trigger_event=trigger_event,
-            candidate_plan=candidate_plan,
-            allow_inference=False,
-        )
-        next_domain = self._next_domain_agent(called)
-        if next_domain is None:
-            return {
-                "action": "FINALIZE_DOMAIN_REVIEW",
-                "reason": "필요한 도메인 심의가 완료되어 최종 판단으로 이동합니다.",
-                "candidate_rebalance_plan": normalized_plan,
-                "layer": "domain",
-            }
-        return {
-            "action": "CALL_AGENT",
-            "reason": f"Core 판단안을 최종화하기 전에 {next_domain} 전문 관점으로 검토합니다.",
-            "agent_id": next_domain,
-            "query": self._default_agent_query(agent_id=next_domain, trigger=trigger, responses=responses),
-            "context": self._default_agent_context(
-                agent_id=next_domain,
-                query=query,
-                responses=responses,
-                trigger_event=trigger_event,
-                candidate_plan=normalized_plan,
-            ),
-            "depth": "medium",
-            "fallback": self._default_agent_fallback(agent_id=next_domain, trigger=trigger),
-            "note": self._default_agent_note(
-                agent_id=next_domain,
-                query=query,
-                responses=responses,
-                trigger=trigger,
-                trigger_event=trigger_event,
-                candidate_plan=normalized_plan,
-            ),
-            "candidate_rebalance_plan": normalized_plan,
-            "layer": "domain",
-        }
-
-    def _fallback_judge_action(
-        self,
-        *,
-        query: str,
-        portfolio: PortfolioSnapshot,
-        responses: list[AgentResponse],
-        called_agents: list[str],
-        depth: str,
-        trigger: str,
-        trigger_event: TriggerEvent | None,
-        candidate_plan: Mapping[str, float] | None,
-    ) -> dict[str, Any]:
-        called = {canonical_agent_id(item) for item in called_agents}
-        normalized_plan = self._draft_candidate_plan(
-            query=query,
-            portfolio=portfolio,
-            responses=responses,
-            trigger=trigger,
-            trigger_event=trigger_event,
-            candidate_plan=candidate_plan,
-            allow_inference=self._should_attempt_plan_inference(
-                query=query,
-                responses=responses,
-                called_agents=called_agents,
-                trigger=trigger,
-            ),
-        )
-        response_map = {canonical_agent_id(item.agent_id): item for item in responses}
-
-        if trigger == "push":
-            push_next = self._next_push_agent(
-                called_agents=called,
-                trigger_event=trigger_event,
-                candidate_plan=normalized_plan,
-            )
-            if push_next == "cost":
-                return {
-                    "action": "CALL_AGENT",
-                    "reason": "속보 사전 점검으로 후보 초안이 생겼으므로 실행 마찰을 먼저 확인합니다.",
-                    "agent_id": "cost",
-                    "query": self._default_agent_query(agent_id="cost", trigger=trigger, responses=responses),
-                    "context": self._default_agent_context(
-                        agent_id="cost",
-                        query=query,
-                        responses=responses,
-                        trigger_event=trigger_event,
-                        candidate_plan=normalized_plan,
-                    ),
-                    "depth": "medium",
-                    "fallback": self._default_agent_fallback(agent_id="cost", trigger=trigger),
-                    "note": self._default_agent_note(
-                        agent_id="cost",
-                        query=query,
-                        responses=responses,
-                        trigger=trigger,
-                        trigger_event=trigger_event,
-                        candidate_plan=normalized_plan,
-                    ),
-                    "candidate_rebalance_plan": normalized_plan,
-                }
-            if push_next == "profit":
-                return {
-                    "action": "CALL_AGENT",
-                    "reason": "속보로 방어적 리밸런싱 초안이 생겼으므로 기대수익과 위험을 먼저 확인합니다.",
-                    "agent_id": "profit",
-                    "query": self._default_agent_query(agent_id="profit", trigger=trigger, responses=responses),
-                    "context": self._default_agent_context(
-                        agent_id="profit",
-                        query=query,
-                        responses=responses,
-                        trigger_event=trigger_event,
-                        candidate_plan=normalized_plan,
-                    ),
-                    "depth": "medium",
-                    "fallback": self._default_agent_fallback(agent_id="profit", trigger=trigger),
-                    "note": self._default_agent_note(
-                        agent_id="profit",
-                        query=query,
-                        responses=responses,
-                        trigger=trigger,
-                        trigger_event=trigger_event,
-                        candidate_plan=normalized_plan,
-                    ),
-                    "candidate_rebalance_plan": normalized_plan,
-                }
-            return {
-                "action": "FINALIZE",
-                "reason": "속보 트리거와 실행 검토만으로 현재 판단에 필요한 맥락이 충분합니다.",
-                "candidate_rebalance_plan": normalized_plan,
-            }
-
-        if not called:
-            agent_id = self._initial_pull_agent(query)
-            reason_by_agent = {
-                "disclosure": "사용자 요청이 일반 포트폴리오 점검이므로 판단 에이전트가 원천 정보인 공시부터 확인합니다.",
-                "news": "사용자 요청이 속보나 시장 반응 확인이므로 판단 에이전트가 뉴스부터 확인합니다.",
-                "report": "사용자 요청이 리포트나 컨센서스 확인이므로 판단 에이전트가 리포트부터 확인합니다.",
-            }
-            return {
-                "action": "CALL_AGENT",
-                "reason": reason_by_agent[agent_id],
-                "agent_id": agent_id,
-                "query": self._default_agent_query(agent_id=agent_id, trigger=trigger, responses=responses),
-                "context": self._default_agent_context(
-                    agent_id=agent_id,
-                    query=query,
-                    responses=responses,
-                    trigger_event=trigger_event,
-                    candidate_plan=normalized_plan,
-                ),
-                "depth": depth,
-                "fallback": self._default_agent_fallback(agent_id=agent_id, trigger=trigger),
-                "note": self._default_agent_note(
-                    agent_id=agent_id,
-                    query=query,
-                    responses=responses,
-                    trigger=trigger,
-                    trigger_event=trigger_event,
-                    candidate_plan=normalized_plan,
-                ),
-                "candidate_rebalance_plan": normalized_plan,
-            }
-
-        if (
-            "disclosure" not in called
-            and not self._is_explicit_news_request(query)
-            and not self._is_explicit_report_request(query)
-        ):
-            return {
-                "action": "CALL_AGENT",
-                "reason": "정기 점검인데 아직 공시 관찰이 없어 투자 가정 변화 여부를 먼저 확인해야 합니다.",
-                "agent_id": "disclosure",
-                "query": self._default_agent_query(agent_id="disclosure", trigger=trigger, responses=responses),
-                "context": self._default_agent_context(
-                    agent_id="disclosure",
-                    query=query,
-                    responses=responses,
-                    trigger_event=trigger_event,
-                    candidate_plan=normalized_plan,
-                ),
-                "depth": depth,
-                "fallback": self._default_agent_fallback(agent_id="disclosure", trigger=trigger),
-                "note": self._default_agent_note(
-                    agent_id="disclosure",
-                    query=query,
-                    responses=responses,
-                    trigger=trigger,
-                    trigger_event=trigger_event,
-                    candidate_plan=normalized_plan,
-                ),
-                "candidate_rebalance_plan": normalized_plan,
-            }
-
-        if "news" not in called:
-            disclosure_response = response_map.get("disclosure")
-            news_depth = self._recommended_news_depth(
-                default_depth=depth,
-                disclosure_response=disclosure_response,
-            )
-            return {
-                "action": "CALL_AGENT",
-                "reason": "공시 관찰 뒤 신호가 구조적인지, 일시적인지, 이미 가격에 반영됐는지 확인합니다.",
-                "agent_id": "news",
-                "query": self._default_agent_query(
-                    agent_id="news",
-                    trigger=trigger,
-                    disclosure_response=disclosure_response,
-                    responses=responses,
-                ),
-                "context": self._default_agent_context(
-                    agent_id="news",
-                    query=query,
-                    responses=responses,
-                    trigger_event=trigger_event,
-                    candidate_plan=normalized_plan,
-                ),
-                "depth": news_depth,
-                "fallback": self._default_agent_fallback(agent_id="news", trigger=trigger),
-                "note": self._default_agent_note(
-                    agent_id="news",
-                    query=query,
-                    responses=responses,
-                    trigger=trigger,
-                    trigger_event=trigger_event,
-                    candidate_plan=normalized_plan,
-                ),
-                "candidate_rebalance_plan": normalized_plan,
-            }
-
-        disclosure_response = response_map.get("disclosure")
-        news_response = response_map.get("news")
-        if self._should_finalize_after_basic_scan(
-            query=query,
-            depth=depth,
-            disclosure_response=disclosure_response,
-            news_response=news_response,
-            candidate_plan=normalized_plan,
-        ):
-            return {
-                "action": "FINALIZE",
-                "reason": "공시와 뉴스 관찰만으로 이번 판단에는 충분해 여기서 추가 호출을 멈춥니다.",
-                "candidate_rebalance_plan": normalized_plan,
-            }
-
-        if "report" not in called and self._should_call_report(
-            query=query,
-            depth=depth,
-            disclosure_response=disclosure_response,
-            news_response=news_response,
-        ):
-            return {
-                "action": "CALL_AGENT",
-                "reason": "공시와 뉴스 신호만으로는 해석이 부족해 증권사 해석이나 사업부 단서를 확인합니다.",
-                "agent_id": "report",
-                "query": self._default_agent_query(agent_id="report", trigger=trigger, responses=responses),
-                "context": self._default_agent_context(
-                    agent_id="report",
-                    query=query,
-                    responses=responses,
-                    trigger_event=trigger_event,
-                    candidate_plan=normalized_plan,
-                ),
-                "depth": depth if depth != "shallow" else "medium",
-                "fallback": self._default_agent_fallback(agent_id="report", trigger=trigger),
-                "note": self._default_agent_note(
-                    agent_id="report",
-                    query=query,
-                    responses=responses,
-                    trigger=trigger,
-                    trigger_event=trigger_event,
-                    candidate_plan=normalized_plan,
-                ),
-                "candidate_rebalance_plan": normalized_plan,
-            }
-
-        if normalized_plan and "profit" not in called:
-            return {
-                "action": "CALL_AGENT",
-                "reason": "후보 리밸런싱 초안이 있으므로 기대수익과 위험 관점의 검토가 필요합니다.",
-                "agent_id": "profit",
-                "query": self._default_agent_query(agent_id="profit", trigger=trigger, responses=responses),
-                "context": self._default_agent_context(
-                    agent_id="profit",
-                    query=query,
-                    responses=responses,
-                    trigger_event=trigger_event,
-                    candidate_plan=normalized_plan,
-                ),
-                "depth": "medium",
-                "fallback": self._default_agent_fallback(agent_id="profit", trigger=trigger),
-                "note": self._default_agent_note(
-                    agent_id="profit",
-                    query=query,
-                    responses=responses,
-                    trigger=trigger,
-                    trigger_event=trigger_event,
-                    candidate_plan=normalized_plan,
-                ),
-                "candidate_rebalance_plan": normalized_plan,
-            }
-
-        if normalized_plan and "cost" not in called:
-            return {
-                "action": "CALL_AGENT",
-                "reason": "후보 초안을 실행하기 전에 거래비용, 슬리피지, 유동성을 확인해야 합니다.",
-                "agent_id": "cost",
-                "query": self._default_agent_query(agent_id="cost", trigger=trigger, responses=responses),
-                "context": self._default_agent_context(
-                    agent_id="cost",
-                    query=query,
-                    responses=responses,
-                    trigger_event=trigger_event,
-                    candidate_plan=normalized_plan,
-                ),
-                "depth": "medium",
-                "fallback": self._default_agent_fallback(agent_id="cost", trigger=trigger),
-                "note": self._default_agent_note(
-                    agent_id="cost",
-                    query=query,
-                    responses=responses,
-                    trigger=trigger,
-                    trigger_event=trigger_event,
-                    candidate_plan=normalized_plan,
-                ),
-                "candidate_rebalance_plan": normalized_plan,
-            }
-
-        return {
-            "action": "FINALIZE",
-            "reason": "현재 관찰만으로 최종 판단을 내릴 수 있어 추가 에이전트를 호출하지 않습니다.",
-            "candidate_rebalance_plan": normalized_plan,
-        }
-
     def _draft_candidate_plan(
         self,
         *,
-        query: str,
         portfolio: PortfolioSnapshot,
-        responses: list[AgentResponse],
         trigger: str,
         trigger_event: TriggerEvent | None,
         candidate_plan: Mapping[str, Any] | None,
-        allow_inference: bool,
     ) -> dict[str, float]:
         if isinstance(candidate_plan, Mapping):
             sanitized = self._sanitize_plan(candidate_plan, portfolio)
@@ -2265,16 +1688,7 @@ class JudgeOrchestrator:
             )
             if push_plan:
                 return push_plan
-        if not allow_inference:
-            return {}
-        payload = self._fallback_judge_payload(
-            query=query,
-            portfolio=portfolio,
-            responses=responses,
-            stage="planning",
-        )
-        raw_plan = payload.get("candidate_rebalance_plan", {})
-        return self._sanitize_plan(raw_plan if isinstance(raw_plan, Mapping) else {}, portfolio)
+        return {}
 
     def _default_agent_query(
         self,
@@ -2376,30 +1790,6 @@ class JudgeOrchestrator:
             return "report"
         return "disclosure"
 
-    def _should_attempt_plan_inference(
-        self,
-        *,
-        query: str,
-        responses: list[AgentResponse],
-        called_agents: list[str],
-        trigger: str,
-    ) -> bool:
-        if trigger == "push":
-            return True
-        if not self._has_rebalance_intent(query):
-            return False
-        called_set = {canonical_agent_id(item) for item in called_agents}
-        if "report" not in called_set:
-            return False
-        info_directions = [
-            response.direction
-            for response in responses
-            if canonical_agent_id(response.agent_id) in {"disclosure", "news", "report"} and response.confidence >= 0.45
-        ]
-        if not info_directions:
-            return False
-        return any(value >= 0.18 for value in info_directions) and any(value <= -0.08 for value in info_directions)
-
     def _push_prescreen_is_sufficient(self, trigger_event: TriggerEvent | None) -> bool:
         if trigger_event is None:
             return False
@@ -2412,27 +1802,6 @@ class JudgeOrchestrator:
             or bool(trigger_event.market_reaction)
             or any(token in text for token in ("조사", "규제", "리콜", "화재", "안전", "investigation", "recall", "probe", "fire"))
         )
-
-    def _prefer_cost_first_for_push(self, trigger_event: TriggerEvent | None) -> bool:
-        if trigger_event is None:
-            return False
-        text = f"{trigger_event.headline} {trigger_event.summary or ''}".casefold()
-        return any(token in text for token in ("조사", "규제", "리콜", "화재", "안전", "investigation", "recall", "probe", "fire"))
-
-    def _next_push_agent(
-        self,
-        *,
-        called_agents: set[str],
-        trigger_event: TriggerEvent | None,
-        candidate_plan: Mapping[str, float],
-    ) -> str | None:
-        if not candidate_plan:
-            return None
-        ordered = ["cost", "profit"] if self._prefer_cost_first_for_push(trigger_event) else ["profit", "cost"]
-        for agent_id in ordered:
-            if agent_id not in called_agents:
-                return agent_id
-        return None
 
     def _should_finalize_after_basic_scan(
         self,
@@ -2808,25 +2177,11 @@ class JudgeOrchestrator:
                 user_prompt=prompt,
                 temperature=0.0,
             )
-        except ChatClientError:
-            return self._fallback_judge_payload(
-                query=query,
-                portfolio=portfolio,
-                responses=responses,
-                stage=stage,
-                candidate_plan=candidate_plan,
-                drift_report=drift_report,
-            )
+        except ChatClientError as exc:
+            raise ChatClientError("Judge final-decision LLM failed; deterministic decision fallback is disabled.") from exc
         payload = sanitize_judge_payload(payload, portfolio=portfolio, stage=stage)
         if self._is_low_signal_judge_payload(payload) or self._judge_payload_has_unsupported_language(payload):
-            return self._fallback_judge_payload(
-                query=query,
-                portfolio=portfolio,
-                responses=responses,
-                stage=stage,
-                candidate_plan=candidate_plan,
-                drift_report=drift_report,
-            )
+            raise ChatClientError("Judge final-decision LLM returned an invalid or unsupported-language payload.")
         return payload
 
     def _compact_direct_indexing_context(
@@ -3077,136 +2432,6 @@ class JudgeOrchestrator:
             "options": payload.get("options"),
         }
         return contains_japanese_kana(user_visible_fields)
-
-    def _fallback_judge_payload(
-        self,
-        *,
-        query: str,
-        portfolio: PortfolioSnapshot,
-        responses: list[AgentResponse],
-        stage: str,
-        candidate_plan: Mapping[str, float] | None = None,
-        drift_report: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        del stage
-        consensus, divergence = self._consensus_metrics(responses)
-        direct_plan = self._sanitize_plan(candidate_plan, portfolio) if isinstance(candidate_plan, Mapping) else {}
-        called = {canonical_agent_id(response.agent_id) for response in responses}
-        direct_context = compact_drift_context(drift_report)
-
-        if direct_plan and {"profit", "cost"}.issubset(called):
-            max_drift = 0.0
-            threshold = 0.0
-            if direct_context is not None:
-                max_drift = float(direct_context.get("portfolio_drift_max") or 0.0)
-                threshold = float(direct_context.get("threshold") or 0.0)
-            drift_text = (
-                f"최대 편차 {max_drift:.1%}가 임계치 {threshold:.1%}를 넘어"
-                if max_drift and threshold
-                else "목표비중과 현재비중의 차이가 확인되어"
-            )
-            return {
-                "decision": DecisionType.REBALANCE.value,
-                "summary": f"{drift_text} 후보 리밸런싱 초안을 사용자 승인 단계로 올립니다.",
-                "confidence": 0.72,
-                "urgency": Urgency.SCHEDULED.value,
-                "reasoning": (
-                    "초기 설정 목표비중과 현재 포트폴리오 비중의 편차로 후보 리밸런싱 초안이 생성되었고, "
-                    "수익 관점과 비용 관점 검토가 모두 decision trace에 포함되었습니다."
-                ),
-                "candidate_rebalance_plan": direct_plan,
-                "needs_trade_evaluation": True,
-                "follow_up_at": None,
-                "feedback_checkpoint": self._default_feedback_checkpoint(),
-                "user_notification": {
-                    "level": "info",
-                    "body": f"{drift_text} 리밸런싱 초안을 준비했습니다. 실행 전 주문 내역을 확인하세요.",
-                    "action_required": False,
-                },
-            }
-
-        if direct_plan:
-            missing = ["profit" if "profit" not in called else "", "cost" if "cost" not in called else ""]
-            missing_text = ", ".join(item for item in missing if item) or "추가"
-            return {
-                "decision": DecisionType.DEFER.value,
-                "summary": "후보 리밸런싱 초안은 있지만 실행 전 검토가 아직 끝나지 않았습니다.",
-                "confidence": 0.62,
-                "urgency": Urgency.DEFER.value,
-                "reasoning": f"목표비중 편차 기반 초안이 있으나 {missing_text} 검토가 완료되지 않았습니다.",
-                "candidate_rebalance_plan": direct_plan,
-                "needs_trade_evaluation": True,
-                "follow_up_at": self._default_follow_up_at(query=query, responses=responses),
-                "feedback_checkpoint": None,
-                "user_notification": {
-                    "level": "info",
-                    "body": "리밸런싱 초안 검토를 이어갑니다.",
-                    "action_required": False,
-                },
-            }
-
-        ticker_votes: dict[str, float] = {}
-        for response in responses:
-            if not response.focus_tickers or response.agent_id == "cost":
-                continue
-            contribution = response.direction * max(response.confidence, 0.2) / len(response.focus_tickers)
-            for ticker in response.focus_tickers:
-                ticker_votes[ticker] = ticker_votes.get(ticker, 0.0) + contribution
-
-        best_ticker = None
-        best_score = 0.0
-        worst_ticker = None
-        worst_score = 0.0
-        for ticker, score in ticker_votes.items():
-            if score > best_score:
-                best_ticker = ticker
-                best_score = score
-            if score < worst_score:
-                worst_ticker = ticker
-                worst_score = score
-
-        candidate_plan: dict[str, float] = {}
-        if best_ticker and worst_ticker and best_score >= 0.18 and worst_score <= -0.08 and best_ticker != worst_ticker:
-            candidate_plan = {
-                best_ticker: 0.05,
-                worst_ticker: -0.05,
-            }
-
-        if divergence >= 0.28:
-            decision = DecisionType.DEFER.value
-            urgency = Urgency.DEFER.value
-            summary = "신호가 엇갈려 지금은 결정을 미루는 편이 낫습니다."
-        elif candidate_plan and consensus >= 0.18:
-            decision = DecisionType.REBALANCE.value
-            urgency = Urgency.SCHEDULED.value
-            summary = f"{best_ticker} 비중 확대와 {worst_ticker} 비중 축소 초안을 검토할 만합니다."
-        elif consensus <= -0.25:
-            decision = DecisionType.USER_DECISION_REQUIRED.value
-            urgency = Urgency.WATCH.value
-            summary = "부정 신호가 우세하지만 자동 매매보다 사용자 확인이 먼저 필요합니다."
-        else:
-            decision = DecisionType.HOLD.value
-            urgency = Urgency.DEFER.value
-            summary = "현재 로컬 근거만으로는 포트폴리오를 바로 바꿀 이유가 크지 않습니다."
-
-        follow_up_at = self._default_follow_up_at(query=query, responses=responses) if decision == DecisionType.DEFER.value else None
-        feedback_checkpoint = self._default_feedback_checkpoint() if decision == DecisionType.REBALANCE.value else None
-        return {
-            "decision": decision,
-            "summary": summary,
-            "confidence": clamp(0.35 + (0.25 * abs(consensus)), 0.0, 0.78),
-            "urgency": urgency,
-            "reasoning": "하위 에이전트의 방향성, 신뢰도, 신호 충돌 정도를 기준으로 휴리스틱 판단을 적용했습니다.",
-            "candidate_rebalance_plan": candidate_plan,
-            "needs_trade_evaluation": bool(candidate_plan),
-            "follow_up_at": follow_up_at,
-            "feedback_checkpoint": feedback_checkpoint,
-            "user_notification": {
-                "level": self._notification_level(DecisionType(decision), Urgency(urgency)),
-                "body": summary,
-                "action_required": decision == DecisionType.USER_DECISION_REQUIRED.value,
-            },
-        }
 
     def _notification_level(self, decision: DecisionType, urgency: Urgency) -> str:
         if decision == DecisionType.USER_DECISION_REQUIRED:

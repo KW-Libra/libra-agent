@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Mapping
 
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -222,17 +221,6 @@ class LibraLangGraphRuntime:
         )
         action_plan = action.get("candidate_rebalance_plan", {})
         candidate_plan = dict(action_plan) if isinstance(action_plan, Mapping) and action_plan else dict(state.get("candidate_plan", {}))
-        if action.get("action") == "FINALIZE" and candidate_plan:
-            forced_action = self._trade_review_action(
-                query=state["query"],
-                responses=responses,
-                called_agents=list(state["called_agents"]),
-                trigger=state["trigger"],
-                trigger_event=trigger_event,
-                candidate_plan=candidate_plan,
-            )
-            if forced_action is not None:
-                action = forced_action
         judge_actions = list(state.get("judge_actions", []))
         judge_actions.append(
             self._serialize_judge_action(
@@ -385,18 +373,9 @@ class LibraLangGraphRuntime:
                 proposed_trades=proposed_trades,
                 market_context_str="\n".join(context_parts),
             )
+            ctx.router = getattr(self.coordinator, "domain_router", None)
             domain_agent = self.coordinator.domain_agents[agent_id]
-            try:
-                verdict = _run_async(domain_agent.deliberate(ctx))
-            except Exception as exc:  # pragma: no cover - optional SDK/env failure path
-                verdict = SimpleNamespace(
-                    agent_id=agent_id,
-                    vote="abstain",
-                    confidence=0.1,
-                    rationale=f"{agent_id} 도메인 에이전트 호출 실패: {exc}",
-                    signals=[{"label": "domain_agent_error", "value": str(exc)}],
-                    llm_used="error",
-                )
+            verdict = _run_async(domain_agent.deliberate(ctx))
             response = domain_verdict_to_agent_response(
                 verdict,
                 agent_id=agent_id,
@@ -828,54 +807,6 @@ class LibraLangGraphRuntime:
             )
         payload["holdings"] = holdings
         return PortfolioSnapshot.from_dict(payload)
-
-    def _trade_review_action(
-        self,
-        *,
-        query: str,
-        responses: list[AgentResponse],
-        called_agents: list[str],
-        trigger: str,
-        trigger_event: TriggerEvent | None,
-        candidate_plan: Mapping[str, float],
-    ) -> dict[str, Any] | None:
-        called = {canonical_agent_id(item) for item in called_agents}
-        next_agent = "profit" if "profit" not in called else "cost" if "cost" not in called else None
-        if next_agent is None:
-            return None
-        disclosure_response = next(
-            (item for item in responses if canonical_agent_id(item.agent_id) == "disclosure"),
-            None,
-        )
-        return {
-            "action": "CALL_AGENT",
-            "reason": f"후보 리밸런싱 초안이 있으므로 최종 실행 판단 전에 {next_agent} 검토 의견을 추가합니다.",
-            "agent_id": next_agent,
-            "query": self.coordinator._default_agent_query(
-                agent_id=next_agent,
-                trigger=trigger,
-                disclosure_response=disclosure_response,
-                responses=responses,
-            ),
-            "context": self.coordinator._default_agent_context(
-                agent_id=next_agent,
-                query=query,
-                responses=responses,
-                trigger_event=trigger_event,
-                candidate_plan=candidate_plan,
-            ),
-            "depth": "medium",
-            "fallback": self.coordinator._default_agent_fallback(agent_id=next_agent, trigger=trigger),
-            "note": self.coordinator._default_agent_note(
-                agent_id=next_agent,
-                query=query,
-                responses=responses,
-                trigger=trigger,
-                trigger_event=trigger_event,
-                candidate_plan=candidate_plan,
-            ),
-            "candidate_rebalance_plan": dict(candidate_plan),
-        }
 
     def _default_thread_id(
         self,
