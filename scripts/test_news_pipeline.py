@@ -1,7 +1,6 @@
 """
 LIBRA — Gemini × Claude 적대 검토 파이프라인 단위 검증
 
-JYlibra-sample_v1#fix/sentiment-gemini-collab (PRAHE) 통합본.
 sentiment 모듈만 단위 테스트 — Kafka/Supabase/Orchestrator 우회.
 
 실행:

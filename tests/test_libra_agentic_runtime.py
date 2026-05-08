@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+os.environ.setdefault("LIBRA_DOMAIN_AGENTS_ENABLED", "true")
 
 from libra_agent.errors import ChatClientError
 from libra_agent.libra.constraints import validate_rebalance_plan

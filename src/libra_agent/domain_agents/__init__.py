@@ -1,11 +1,10 @@
-"""LIBRA Domain Agents — JY 7-에이전트 합의 시스템.
+"""LIBRA Domain Agents — 7개 판단 관점 합의 시스템.
 
-JYlibra-sample_v1 의 도메인 전문 에이전트 7명을 흡수한 모듈.
 패러다임: 병렬 deliberate → AgentVerdict (vote: approve/reject/abstain) → 합의.
 
-본 모듈의 BaseAgent / PortfolioContext / AgentVerdict 는 JY 원본과 호환되지만,
-LIBRA Judge 시스템(libra_agent.libra.agents) 의 InformationAgentProtocol /
-AgentResponse / PortfolioSnapshot 과는 ``_adapter`` 모듈을 거쳐 매핑된다.
+본 모듈의 BaseAgent / PortfolioContext / AgentVerdict 는 LIBRA Judge 시스템
+(libra_agent.libra.agents) 의 InformationAgentProtocol / AgentResponse /
+PortfolioSnapshot 과 ``_adapter`` 모듈을 거쳐 매핑된다.
 
 에이전트:
   - RiskAgent      (Vora)   — 정량 리스크 감시 (HHI/VaR/MDD)

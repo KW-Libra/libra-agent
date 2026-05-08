@@ -1,7 +1,7 @@
-"""LIBRA — JY 7-에이전트 → Judge 어댑터 단위 검증.
+"""LIBRA — 7개 판단 관점 → Judge 어댑터 단위 검증.
 
-JYlibra-sample_v1 의 7개 도메인 에이전트가 LIBRA InformationAgentProtocol 로
-변환되어 호출되는 흐름을 검증한다.
+7개 전문 판단 관점이 LIBRA InformationAgentProtocol 로 변환되어
+Judge 흐름에서 호출될 수 있는지 검증한다.
 
 검증 단계:
     1. 7개 에이전트 + 어댑터 import (외부 API 없이도 통과)
