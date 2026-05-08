@@ -1,0 +1,60 @@
+scenario_id: 06_high_execution_cost
+title: 거래비용 과다
+description: drift는 크지만 거래 금액이 커 실행 비용과 유동성 검토가 필요한 상황.
+simulated_date: "2026-05-31"
+profile_id: balanced_kr
+query: 큰 규모의 리밸런싱 초안을 실행해도 되는지 비용과 체결 관점까지 검토해줘.
+trigger: pull
+depth: deep
+portfolio_definition_enabled: true
+portfolio:
+  total_value_krw: 500000000
+  cash_weight: 0.02
+  holdings:
+    - symbol: "005930"
+      current_weight: 0.52
+      target_weight: 0.28
+      shares: 3514
+      last_price: 74000
+      average_price: 65000
+    - symbol: "000660"
+      current_weight: 0.22
+      target_weight: 0.18
+      shares: 608
+      last_price: 181000
+      average_price: 150000
+    - symbol: "035420"
+      current_weight: 0.10
+      target_weight: 0.18
+      shares: 207
+      last_price: 242000
+      average_price: 235000
+    - symbol: "105560"
+      current_weight: 0.08
+      target_weight: 0.18
+      shares: 455
+      last_price: 88000
+      average_price: 85000
+    - symbol: "207940"
+      current_weight: 0.06
+      target_weight: 0.16
+      shares: 36
+      last_price: 830000
+      average_price: 800000
+events:
+  - event_type: MACRO
+    headline: 장중 변동성 확대와 대형주 거래대금 감소
+    summary: 변동성이 높은 날 큰 매매를 즉시 실행하면 시장충격과 슬리피지가 커질 수 있다.
+    confidence: 0.80
+    tickers: ["005930", "000660", "035420", "105560", "207940"]
+documents: []
+expected:
+  agents: [profit, cost, execution]
+  decision: DEFER
+  purpose: Threshold/Calendar는 실행비용을 모르지만 LIBRA는 보류 가능
+baseline_decisions:
+  buy_hold: HOLD
+  calendar_monthly: REBALANCE
+  threshold_5pct: REBALANCE
+  equal_weight_calendar: REBALANCE
+

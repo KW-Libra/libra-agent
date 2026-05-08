@@ -1,0 +1,55 @@
+scenario_id: 01_quiet_routine
+title: 조용한 정기 점검
+description: 특별 이벤트 없이 정기 점검만 수행한다. Calendar 전략의 불필요한 월말 리밸런싱과 비교한다.
+simulated_date: "2026-05-31"
+profile_id: balanced_kr
+query: 포트폴리오 정기 점검. 필요한 에이전트만 호출하고 판단 과정을 남겨줘.
+trigger: pull
+depth: medium
+portfolio_definition_enabled: false
+portfolio:
+  total_value_krw: 100000000
+  cash_weight: 0.05
+  holdings:
+    - symbol: "005930"
+      current_weight: 0.31
+      target_weight: 0.30
+      shares: 420
+      last_price: 74000
+      average_price: 71000
+    - symbol: "000660"
+      current_weight: 0.19
+      target_weight: 0.20
+      shares: 105
+      last_price: 181000
+      average_price: 175000
+    - symbol: "005380"
+      current_weight: 0.20
+      target_weight: 0.20
+      shares: 85
+      last_price: 235000
+      average_price: 228000
+    - symbol: "105560"
+      current_weight: 0.15
+      target_weight: 0.15
+      shares: 170
+      last_price: 88000
+      average_price: 85000
+    - symbol: "207940"
+      current_weight: 0.10
+      target_weight: 0.10
+      shares: 12
+      last_price: 830000
+      average_price: 810000
+events: []
+documents: []
+expected:
+  agents: [disclosure, news]
+  decision: HOLD
+  purpose: 불필요한 거래 회피와 짧은 trace 확인
+baseline_decisions:
+  buy_hold: HOLD
+  calendar_monthly: REBALANCE
+  threshold_5pct: HOLD
+  equal_weight_calendar: REBALANCE
+

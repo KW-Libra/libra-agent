@@ -1,0 +1,60 @@
+scenario_id: 05_target_drift_rebalance
+title: 목표비중 이탈
+description: 목표비중 대비 drift가 커 리밸런싱 초안이 필요한 상황.
+simulated_date: "2026-05-31"
+profile_id: balanced_kr
+query: 초기 목표비중 기준으로 리밸런싱 필요 여부를 판단해줘.
+trigger: pull
+depth: medium
+portfolio_definition_enabled: true
+portfolio:
+  total_value_krw: 120000000
+  cash_weight: 0.03
+  holdings:
+    - symbol: "005930"
+      current_weight: 0.43
+      target_weight: 0.30
+      shares: 697
+      last_price: 74000
+      average_price: 68000
+    - symbol: "000660"
+      current_weight: 0.27
+      target_weight: 0.20
+      shares: 179
+      last_price: 181000
+      average_price: 158000
+    - symbol: "005380"
+      current_weight: 0.10
+      target_weight: 0.20
+      shares: 51
+      last_price: 235000
+      average_price: 227000
+    - symbol: "105560"
+      current_weight: 0.10
+      target_weight: 0.15
+      shares: 136
+      last_price: 88000
+      average_price: 85000
+    - symbol: "207940"
+      current_weight: 0.07
+      target_weight: 0.12
+      shares: 10
+      last_price: 830000
+      average_price: 805000
+events:
+  - event_type: DISCLOSURE
+    headline: 보유 종목 전반 신규 중대 공시 없음
+    summary: 리밸런싱 판단의 주요 원인은 이벤트가 아니라 목표비중 drift다.
+    confidence: 0.75
+    tickers: ["005930", "000660", "005380", "105560", "207940"]
+documents: []
+expected:
+  agents: [disclosure, profit, cost, risk]
+  decision: REBALANCE
+  purpose: 후보 초안이 있을 때 profit/cost 호출 확인
+baseline_decisions:
+  buy_hold: HOLD
+  calendar_monthly: REBALANCE
+  threshold_5pct: REBALANCE
+  equal_weight_calendar: REBALANCE
+

@@ -1,0 +1,64 @@
+scenario_id: 10_macro_shock
+title: 거시 리스크 확대
+description: 환율과 금리 충격으로 수출주와 성장주 변동성이 커진 상황.
+simulated_date: "2026-05-27"
+profile_id: balanced_kr
+query: 금리와 환율 충격이 현재 포트폴리오 판단에 미치는 영향을 점검해줘.
+trigger: pull
+depth: deep
+portfolio_definition_enabled: false
+portfolio:
+  total_value_krw: 100000000
+  cash_weight: 0.05
+  holdings:
+    - symbol: "005930"
+      current_weight: 0.30
+      target_weight: 0.30
+      shares: 405
+      last_price: 74000
+      average_price: 70000
+    - symbol: "000660"
+      current_weight: 0.22
+      target_weight: 0.20
+      shares: 122
+      last_price: 181000
+      average_price: 170000
+    - symbol: "035420"
+      current_weight: 0.16
+      target_weight: 0.15
+      shares: 66
+      last_price: 242000
+      average_price: 235000
+    - symbol: "105560"
+      current_weight: 0.17
+      target_weight: 0.20
+      shares: 193
+      last_price: 88000
+      average_price: 85000
+    - symbol: "005380"
+      current_weight: 0.10
+      target_weight: 0.10
+      shares: 43
+      last_price: 235000
+      average_price: 225000
+events:
+  - event_type: MACRO
+    headline: 원화 약세와 금리 상승으로 성장주 변동성 확대
+    summary: 환율 상승과 금리 부담이 인터넷 성장주 밸류에이션에 부정적이고, 수출주는 단기 방어 효과가 있다.
+    confidence: 0.82
+    tickers: ["005930", "000660", "035420"]
+documents:
+  - doc_type: MACRO
+    title: 한국은행 금융시장 동향
+    body: 시장금리 상승과 환율 변동성 확대가 주식시장 위험선호를 낮추고 있다.
+    publisher: BOK
+    tickers: ["005930", "000660", "035420", "105560"]
+expected:
+  agents: [news, macro, risk]
+  decision: DEFER
+  purpose: 거시 정보가 drift 룰과 다른 판단 차원을 만든다는 점 확인
+baseline_decisions:
+  buy_hold: HOLD
+  calendar_monthly: HOLD
+  threshold_5pct: HOLD
+  equal_weight_calendar: HOLD

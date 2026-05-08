@@ -1,0 +1,65 @@
+scenario_id: 03_positive_disclosure
+title: 긍정 공시 확인
+description: 실적 개선 공시는 있으나 목표비중 이탈이 작아 즉시 매매보다 관찰이 적절한 상황.
+simulated_date: "2026-05-20"
+profile_id: balanced_kr
+query: 삼성전자 실적 개선 공시가 포트폴리오 판단을 바꾸는지 확인해줘.
+trigger: pull
+depth: medium
+portfolio_definition_enabled: false
+portfolio:
+  total_value_krw: 80000000
+  cash_weight: 0.05
+  holdings:
+    - symbol: "005930"
+      current_weight: 0.34
+      target_weight: 0.30
+      shares: 368
+      last_price: 74000
+      average_price: 70000
+    - symbol: "000660"
+      current_weight: 0.21
+      target_weight: 0.20
+      shares: 93
+      last_price: 181000
+      average_price: 170000
+    - symbol: "005380"
+      current_weight: 0.20
+      target_weight: 0.20
+      shares: 68
+      last_price: 235000
+      average_price: 226000
+    - symbol: "105560"
+      current_weight: 0.10
+      target_weight: 0.15
+      shares: 91
+      last_price: 88000
+      average_price: 85000
+    - symbol: "207940"
+      current_weight: 0.10
+      target_weight: 0.10
+      shares: 10
+      last_price: 830000
+      average_price: 800000
+events:
+  - event_type: EARNINGS
+    headline: 삼성전자 AI 메모리 수요로 영업이익 전망 상향
+    summary: 실적 개선 공시가 확인되었지만 이미 포트폴리오 내 비중은 목표보다 소폭 높다.
+    confidence: 0.86
+    tickers: ["005930"]
+documents:
+  - doc_type: REPORT
+    title: 반도체 업황 회복 리포트
+    body: 증권사 리포트는 AI 서버 메모리 수요 회복을 근거로 삼성전자와 SK하이닉스 실적 전망을 상향했다.
+    publisher: 한경컨센서스
+    tickers: ["005930", "000660"]
+expected:
+  agents: [disclosure, news, report]
+  decision: HOLD
+  purpose: 긍정 근거가 있어도 drift/비용 없이 무조건 매수하지 않는지 확인
+baseline_decisions:
+  buy_hold: HOLD
+  calendar_monthly: HOLD
+  threshold_5pct: HOLD
+  equal_weight_calendar: HOLD
+

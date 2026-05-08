@@ -1,0 +1,42 @@
+profiles:
+  balanced_kr:
+    name: 중립형 국내 대형주 투자자
+    risk_profile: balanced
+    approval_mode: manual
+    cash_min_weight: 0.03
+    excluded_sectors: []
+    max_single_weight: 0.40
+    max_sector_weight:
+      반도체: 0.70
+      인터넷: 0.35
+    esg_min_score: null
+    approval_required_above_krw: 10000000
+    tax_loss_harvesting_pref: opportunistic
+    preferences:
+      - 국내 대형주 중심
+      - 반도체 비중은 70%를 넘기지 않는다
+      - 단일 종목 40% 초과 시 사용자 승인 필요
+      - 세금과 거래비용이 크면 즉시 매매보다 보류를 선호
+
+  esg_conservative:
+    name: 보수형 ESG 투자자
+    risk_profile: conservative
+    approval_mode: manual
+    cash_min_weight: 0.08
+    excluded_sectors:
+      - gambling
+      - tobacco
+      - coal
+      - controversial_platform
+    max_single_weight: 0.30
+    max_sector_weight:
+      반도체: 0.45
+      인터넷: 0.25
+    esg_min_score: 70
+    approval_required_above_krw: 5000000
+    tax_loss_harvesting_pref: conservative
+    preferences:
+      - ESG 70점 미만 종목은 편입 전 사용자 승인 필요
+      - 보수형 투자자로 단일 종목 30%를 넘기지 않는다
+      - 논란 업종과 규제 리스크 종목은 회피
+      - 현금 하한 8%를 유지한다

@@ -1,0 +1,54 @@
+scenario_id: 07_policy_violation
+title: 사용자 제약 위반
+description: 단일 종목 30% 제한을 넘긴 보수형 사용자 포트폴리오.
+simulated_date: "2026-05-22"
+profile_id: esg_conservative
+query: 사용자 투자정책 위반 여부를 중심으로 포트폴리오를 점검해줘.
+trigger: pull
+depth: medium
+portfolio_definition_enabled: false
+portfolio:
+  total_value_krw: 70000000
+  cash_weight: 0.09
+  holdings:
+    - symbol: "005930"
+      current_weight: 0.42
+      target_weight: 0.25
+      shares: 397
+      last_price: 74000
+      average_price: 70000
+    - symbol: "105560"
+      current_weight: 0.20
+      target_weight: 0.20
+      shares: 159
+      last_price: 88000
+      average_price: 85000
+    - symbol: "055550"
+      current_weight: 0.16
+      target_weight: 0.20
+      shares: 253
+      last_price: 44200
+      average_price: 43000
+    - symbol: "207940"
+      current_weight: 0.13
+      target_weight: 0.20
+      shares: 11
+      last_price: 830000
+      average_price: 805000
+events:
+  - event_type: OTHER
+    headline: 사용자 제약 점검 필요
+    summary: 보수형 ESG 프로필의 단일 종목 30% 제한을 삼성전자가 초과했다.
+    confidence: 0.90
+    tickers: ["005930"]
+documents: []
+expected:
+  agents: [compliance, risk]
+  decision: USER_DECISION_REQUIRED
+  purpose: 사용자 정책 인지 여부 확인
+baseline_decisions:
+  buy_hold: HOLD
+  calendar_monthly: HOLD
+  threshold_5pct: REBALANCE
+  equal_weight_calendar: HOLD
+
