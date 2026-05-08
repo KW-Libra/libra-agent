@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -55,6 +53,7 @@ class LibraGraphState(TypedDict, total=False):
     candidate_plan: dict[str, float]
     needs_trade_eval: bool
     final_result: dict[str, Any]
+    pending_call_layer: str | None
 
 
 class LibraLangGraphRuntime:
@@ -156,6 +155,7 @@ class LibraLangGraphRuntime:
         builder = StateGraph(LibraGraphState)
         builder.add_node("initialize", self._initialize_node)
         builder.add_node("judge_orchestrate", self._judge_orchestrate)
+        builder.add_node("domain_orchestrate", self._domain_orchestrate)
         builder.add_node("execute_agent", self._execute_agent)
         builder.add_node("domain_consensus", self._domain_consensus)
         builder.add_node("final_judge", self._final_judge)
@@ -165,7 +165,6 @@ class LibraLangGraphRuntime:
 
         builder.add_edge(START, "initialize")
         builder.add_edge("initialize", "judge_orchestrate")
-        builder.add_edge("execute_agent", "judge_orchestrate")
         builder.add_edge("domain_consensus", "final_judge")
         builder.add_edge("final_judge", "route_human_review")
         builder.add_edge("human_review", END)
@@ -193,6 +192,7 @@ class LibraLangGraphRuntime:
             "judge_actions": [],
             "domain_consensus": {},
             "pending_call": None,
+            "pending_call_layer": None,
             "turn_number": 1,
             "candidate_plan": candidate_plan,
             "needs_trade_eval": bool(candidate_plan),
@@ -202,7 +202,7 @@ class LibraLangGraphRuntime:
 
     def _judge_orchestrate(
         self, state: LibraGraphState
-    ) -> Command[Literal["deadline_terminal", "execute_agent", "domain_consensus"]]:
+    ) -> Command[Literal["deadline_terminal", "execute_agent", "domain_orchestrate"]]:
         run_state = self._deserialize_run_state(state["run_state"])
         if self.coordinator._deadline_exceeded(run_state):
             return Command(goto="deadline_terminal")
@@ -247,6 +247,7 @@ class LibraLangGraphRuntime:
             "needs_trade_eval": bool(candidate_plan),
             "judge_actions": judge_actions,
             "pending_call": None,
+            "pending_call_layer": None,
         }
         if action.get("action") == "CALL_AGENT":
             update["pending_call"] = self._serialize_planned_call(
@@ -259,13 +260,68 @@ class LibraLangGraphRuntime:
                     note=str(action["note"]) if action.get("note") is not None else None,
                 )
             )
+            update["pending_call_layer"] = "core"
+            return Command(update=update, goto="execute_agent")
+        return Command(update=update, goto="domain_orchestrate")
+
+    def _domain_orchestrate(
+        self, state: LibraGraphState
+    ) -> Command[Literal["deadline_terminal", "execute_agent", "domain_consensus"]]:
+        run_state = self._deserialize_run_state(state["run_state"])
+        if self.coordinator._deadline_exceeded(run_state):
+            return Command(goto="deadline_terminal")
+
+        portfolio = PortfolioSnapshot.from_dict(state["portfolio"])
+        trigger_event = self._trigger_event_from_state(state)
+        responses = [AgentResponse.from_dict(item) for item in state["responses"]]
+        action = self.coordinator._domain_next_action(
+            query=state["query"],
+            portfolio=portfolio,
+            responses=responses,
+            called_agents=list(state["called_agents"]),
+            depth=state["depth"],
+            trigger=state["trigger"],
+            trigger_event=trigger_event,
+            candidate_plan=state.get("candidate_plan", {}),
+        )
+        action_plan = action.get("candidate_rebalance_plan", {})
+        candidate_plan = dict(action_plan) if isinstance(action_plan, Mapping) and action_plan else dict(state.get("candidate_plan", {}))
+        judge_actions = list(state.get("judge_actions", []))
+        judge_actions.append(
+            self._serialize_judge_action(
+                action,
+                turn_number=int(state.get("turn_number", 1)),
+                called_agents=list(state["called_agents"]),
+                response_count=len(responses),
+            )
+        )
+        update: dict[str, Any] = {
+            "candidate_plan": candidate_plan,
+            "needs_trade_eval": bool(candidate_plan),
+            "judge_actions": judge_actions,
+            "pending_call": None,
+            "pending_call_layer": None,
+        }
+        if action.get("action") == "CALL_AGENT":
+            update["pending_call"] = self._serialize_planned_call(
+                PlannedAgentCall(
+                    agent_id=str(action["agent_id"]),
+                    query=str(action["query"]),
+                    context=str(action["context"]),
+                    depth=str(action["depth"]),
+                    fallback=str(action["fallback"]) if action.get("fallback") is not None else None,
+                    note=str(action["note"]) if action.get("note") is not None else None,
+                )
+            )
+            update["pending_call_layer"] = "domain"
             return Command(update=update, goto="execute_agent")
         return Command(update=update, goto="domain_consensus")
 
-    def _execute_agent(self, state: LibraGraphState) -> dict[str, Any]:
+    def _execute_agent(self, state: LibraGraphState) -> Command[Literal["judge_orchestrate", "domain_orchestrate"]]:
         pending_call_payload = state.get("pending_call")
+        return_target = "domain_orchestrate" if state.get("pending_call_layer") == "domain" else "judge_orchestrate"
         if not isinstance(pending_call_payload, Mapping):
-            return {}
+            return Command(goto=return_target)
 
         planned_call = self._deserialize_planned_call(pending_call_payload)
         agent_id = canonical_agent_id(planned_call.agent_id)
@@ -295,13 +351,60 @@ class LibraLangGraphRuntime:
                 knowledge_base=knowledge_base,
                 rebalance_plan=dict(state.get("candidate_plan", {})),
             )
-        else:
+        elif agent_id == "cost":
             response = self.coordinator.cost_agent.run(
                 query=planned_call.query,
                 turn_number=state["turn_number"],
                 portfolio=portfolio,
                 rebalance_plan=dict(state.get("candidate_plan", {})),
             )
+        elif agent_id in getattr(self.coordinator, "domain_agents", {}):
+            from libra_agent.domain_agents._adapter import (
+                _run_async,
+                domain_verdict_to_agent_response,
+                portfolio_snapshot_to_domain_context,
+            )
+
+            candidate_plan = dict(state.get("candidate_plan", {}))
+            context_parts = [str(planned_call.context or f"원 사용자 요청: {state['query']}")]
+            if candidate_plan:
+                context_parts.append(f"후보 리밸런싱 초안: {candidate_plan}")
+            for prior in [AgentResponse.from_dict(item) for item in responses[-6:]]:
+                context_parts.append(f"{prior.agent_id}: {prior.reasoning_for_judge_agent or prior.query_understood}")
+            proposed_trades = [
+                {
+                    "symbol": ticker,
+                    "weight_delta": float(delta),
+                    "side": "buy" if float(delta) > 0 else "sell" if float(delta) < 0 else "hold",
+                }
+                for ticker, delta in candidate_plan.items()
+            ]
+            ctx = portfolio_snapshot_to_domain_context(
+                portfolio,
+                user_id="libra",
+                proposed_trades=proposed_trades,
+                market_context_str="\n".join(context_parts),
+            )
+            domain_agent = self.coordinator.domain_agents[agent_id]
+            try:
+                verdict = _run_async(domain_agent.deliberate(ctx))
+            except Exception as exc:  # pragma: no cover - optional SDK/env failure path
+                verdict = SimpleNamespace(
+                    agent_id=agent_id,
+                    vote="abstain",
+                    confidence=0.1,
+                    rationale=f"{agent_id} 도메인 에이전트 호출 실패: {exc}",
+                    signals=[{"label": "domain_agent_error", "value": str(exc)}],
+                    llm_used="error",
+                )
+            response = domain_verdict_to_agent_response(
+                verdict,
+                agent_id=agent_id,
+                turn_number=state["turn_number"],
+                query=planned_call.query,
+            )
+        else:
+            return Command(update={"pending_call": None, "pending_call_layer": None}, goto=return_target)
         response = sanitize_agent_response_payload(
             response.to_dict(),
             agent_id=agent_id,
@@ -315,150 +418,24 @@ class LibraLangGraphRuntime:
         responses.append(response.to_dict())
         executed_calls.append(self._serialize_planned_call(planned_call))
         called_agents.append(agent_id)
-        return {
-            "knowledge_base": knowledge_base.to_state_payload(),
-            "responses": responses,
-            "executed_calls": executed_calls,
-            "called_agents": called_agents,
-            "pending_call": None,
-            "turn_number": state["turn_number"] + 1,
-        }
+        return Command(
+            update={
+                "knowledge_base": knowledge_base.to_state_payload(),
+                "responses": responses,
+                "executed_calls": executed_calls,
+                "called_agents": called_agents,
+                "pending_call": None,
+                "pending_call_layer": None,
+                "turn_number": state["turn_number"] + 1,
+            },
+            goto=return_target,
+        )
 
     def _domain_consensus(self, state: LibraGraphState) -> dict[str, Any]:
-        domain_agents = getattr(self.coordinator, "domain_agents", {})
-        if not domain_agents:
-            return {"domain_consensus": {}}
-
-        from libra_agent.domain_agents._adapter import (
-            _run_async,
-            domain_verdict_to_agent_response,
-            portfolio_snapshot_to_domain_context,
-        )
         from libra_agent.domain_agents._consensus import compute_domain_consensus
 
-        already_called = {canonical_agent_id(item) for item in state.get("called_agents", [])}
-        pending = {
-            name: agent
-            for name, agent in domain_agents.items()
-            if canonical_agent_id(name) not in already_called
-        }
-        if not pending:
-            responses = [AgentResponse.from_dict(item) for item in state["responses"]]
-            return {"domain_consensus": compute_domain_consensus(responses)}
-
-        portfolio = PortfolioSnapshot.from_dict(state["portfolio"])
-        candidate_plan = dict(state.get("candidate_plan", {}))
         responses = [AgentResponse.from_dict(item) for item in state["responses"]]
-        context_parts = [
-            f"원 사용자 요청: {state['query']}",
-            f"후보 리밸런싱 초안: {candidate_plan or '{}'}",
-        ]
-        for response in responses[-6:]:
-            context_parts.append(f"{response.agent_id}: {response.reasoning_for_judge_agent or response.query_understood}")
-        proposed_trades = [
-            {
-                "symbol": ticker,
-                "weight_delta": float(delta),
-                "side": "buy" if float(delta) > 0 else "sell" if float(delta) < 0 else "hold",
-            }
-            for ticker, delta in candidate_plan.items()
-        ]
-        ctx = portfolio_snapshot_to_domain_context(
-            portfolio,
-            user_id="libra",
-            proposed_trades=proposed_trades,
-            market_context_str="\n".join(context_parts),
-        )
-
-        async def collect() -> list[tuple[str, Any]]:
-            async def call_one(name: str, agent: Any) -> tuple[str, Any]:
-                try:
-                    return name, await agent.deliberate(ctx)
-                except Exception as exc:  # pragma: no cover - exercised by optional SDK/env failures
-                    return name, SimpleNamespace(
-                        agent_id=name,
-                        vote="abstain",
-                        confidence=0.1,
-                        rationale=f"{name} 도메인 에이전트 호출 실패: {exc}",
-                        signals=[{"label": "domain_agent_error", "value": str(exc)}],
-                        llm_used="error",
-                    )
-
-            if self._serial_domain_agents():
-                delay_seconds = self._domain_agent_delay_seconds()
-                collected: list[tuple[str, Any]] = []
-                for offset, (name, agent) in enumerate(pending.items()):
-                    if offset > 0 and delay_seconds > 0:
-                        await asyncio.sleep(delay_seconds)
-                    collected.append(await call_one(name, agent))
-                return collected
-
-            return list(await asyncio.gather(*(call_one(name, agent) for name, agent in pending.items())))
-
-        verdicts = _run_async(collect())
-        serialized_responses = list(state["responses"])
-        executed_calls = list(state["executed_calls"])
-        called_agents = list(state["called_agents"])
-        turn_number = int(state.get("turn_number", 1))
-        new_responses: list[AgentResponse] = []
-        for offset, (name, verdict) in enumerate(verdicts):
-            response = domain_verdict_to_agent_response(
-                verdict,
-                agent_id=canonical_agent_id(name),
-                turn_number=turn_number + offset,
-                query=state["query"],
-            )
-            new_responses.append(response)
-            serialized_responses.append(response.to_dict())
-            called_agents.append(canonical_agent_id(name))
-            executed_calls.append(
-                self._serialize_planned_call(
-                    PlannedAgentCall(
-                        agent_id=canonical_agent_id(name),
-                        query=f"{name} 도메인 에이전트 합의 검토",
-                        context="\n".join(context_parts),
-                        depth="medium",
-                        fallback=None,
-                        note="Judge 최종 판단 전 도메인 에이전트 합의 단계입니다.",
-                    )
-                )
-            )
-
-        all_domain_responses = [
-            response
-            for response in [*responses, *new_responses]
-            if response.agent_id in set(domain_agents)
-        ]
-        return {
-            "responses": serialized_responses,
-            "executed_calls": executed_calls,
-            "called_agents": called_agents,
-            "turn_number": turn_number + len(verdicts),
-            "domain_consensus": compute_domain_consensus(all_domain_responses),
-        }
-
-    def _serial_domain_agents(self) -> bool:
-        raw = os.environ.get("LIBRA_DOMAIN_AGENT_SERIAL")
-        if raw is not None:
-            return raw.lower() in {"1", "true", "yes", "on"}
-        return os.environ.get("LLM_ROUTING_POLICY", "").lower() == "gemini"
-
-    def _domain_agent_delay_seconds(self) -> float:
-        raw = os.environ.get("LIBRA_DOMAIN_AGENT_DELAY_SECONDS") or os.environ.get("LIBRA_GEMINI_THROTTLE_SECONDS")
-        if raw is not None:
-            try:
-                return max(0.0, float(raw))
-            except ValueError:
-                return 0.0
-        free_tier = os.environ.get("LIBRA_GEMINI_FREE_TIER", "true").lower() not in {
-            "0",
-            "false",
-            "no",
-            "off",
-        }
-        if free_tier and os.environ.get("LLM_ROUTING_POLICY", "").lower() == "gemini":
-            return 13.0
-        return 0.0
+        return {"domain_consensus": compute_domain_consensus(responses)}
 
     def _final_judge(self, state: LibraGraphState) -> dict[str, Any]:
         portfolio = PortfolioSnapshot.from_dict(state["portfolio"])
@@ -802,6 +779,7 @@ class LibraLangGraphRuntime:
             "turn_number": turn_number,
             "action": str(action.get("action") or "").strip().upper(),
             "agent_id": canonical_agent_id(agent_id) if agent_id else None,
+            "layer": str(action.get("layer") or "core").strip(),
             "reason": str(action.get("reason") or "").strip(),
             "query": str(action.get("query") or "").strip(),
             "context": str(action.get("context") or "").strip(),

@@ -256,6 +256,34 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
         self.assertIn("공시", trace[0]["summary"])
         self.assertEqual(trace[2]["query"], "다음 호출 결정: news")
         self.assertEqual(trace[4]["query"], "추가 호출 여부 판단")
+        self.assertEqual(trace[5]["query"], "도메인 심의 호출: risk")
+        self.assertIn("Core 판단안", trace[5]["summary"])
+
+    def test_domain_council_action_can_route_domain_agent_directly(self) -> None:
+        orchestrator = JudgeOrchestrator(
+            client=FakeChatClient(
+                {
+                    "action": "CALL_AGENT",
+                    "agent_id": "risk",
+                    "reason": "집중도 리스크를 먼저 확인",
+                }
+            )
+        )
+
+        action = orchestrator._domain_next_action(
+            query="반도체 포트폴리오 집중도 위험부터 판단해줘",
+            portfolio=_portfolio(),
+            responses=[],
+            called_agents=[],
+            depth="medium",
+            trigger="pull",
+            trigger_event=None,
+            candidate_plan=None,
+        )
+
+        self.assertEqual(action["action"], "CALL_AGENT")
+        self.assertEqual(action["agent_id"], "risk")
+        self.assertEqual(action["layer"], "domain")
 
     def test_direct_indexing_definition_creates_plan_and_trade_reviews(self) -> None:
         orchestrator = JudgeOrchestrator(client=FailingChatClient())

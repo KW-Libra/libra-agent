@@ -13,6 +13,7 @@ from .libra.prompts import (
     InformationAgentPromptProfile,
     JUDGE_ACTION_RULES,
     JUDGE_ACTION_SYSTEM_PROMPT,
+    JUDGE_DOMAIN_ACTION_SYSTEM_PROMPT,
     JUDGE_NOTIFICATION_LEVELS,
     JUDGE_PHASE_REQUIRED_KEYS,
     JUDGE_PHASE_SYSTEM_PROMPT,
@@ -49,6 +50,9 @@ from .utils import coerce_datetime, collapse_whitespace, contains_japanese_kana,
 
 
 ChatClient = ChatClientProtocol
+
+CORE_ROUTING_AGENT_IDS = ("disclosure", "news", "report", "profit", "cost")
+DOMAIN_ROUTING_AGENT_IDS = ("risk", "tax", "compliance", "macro", "sentiment", "execution", "esg")
 
 
 POSITIVE_KEYWORDS = (
@@ -1349,6 +1353,15 @@ class JudgeOrchestrator:
         from .libra_graph import LibraLangGraphRuntime
         self._graph_runtime = LibraLangGraphRuntime(self)
 
+    def _routing_agent_ids(self) -> tuple[str, ...]:
+        return CORE_ROUTING_AGENT_IDS
+
+    def _next_domain_agent(self, called_agents: set[str]) -> str | None:
+        for agent_id in DOMAIN_ROUTING_AGENT_IDS:
+            if agent_id in self.domain_agents and agent_id not in called_agents:
+                return agent_id
+        return None
+
     def run(
         self,
         *,
@@ -1524,7 +1537,7 @@ class JudgeOrchestrator:
             "agent_responses": [self._compact_agent_response(response) for response in responses],
             "instructions": {
                 "action_values": ["CALL_AGENT", "FINALIZE"],
-                "agent_values": ["disclosure", "news", "report", "profit", "cost"],
+                "agent_values": list(self._routing_agent_ids()),
                 "depth_values": ["shallow", "medium", "deep"],
                 "rules": JUDGE_ACTION_RULES,
             },
@@ -1560,6 +1573,98 @@ class JudgeOrchestrator:
         )
         if normalized is None:
             return self._fallback_judge_action(
+                query=query,
+                portfolio=portfolio,
+                responses=responses,
+                called_agents=called_agents,
+                depth=depth,
+                trigger=trigger,
+                trigger_event=trigger_event,
+                candidate_plan=candidate_plan,
+            )
+        return normalized
+
+    def _domain_next_action(
+        self,
+        *,
+        query: str,
+        portfolio: PortfolioSnapshot,
+        responses: list[AgentResponse],
+        called_agents: list[str],
+        depth: str,
+        trigger: str,
+        trigger_event: TriggerEvent | None,
+        candidate_plan: Mapping[str, float] | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "query": query,
+            "trigger": trigger,
+            "trigger_event": trigger_event.to_dict() if trigger_event else None,
+            "depth": depth,
+            "called_agents": list(called_agents),
+            "called_domain_agents": [
+                agent_id
+                for agent_id in called_agents
+                if canonical_agent_id(agent_id) in DOMAIN_ROUTING_AGENT_IDS
+            ],
+            "candidate_rebalance_plan": dict(candidate_plan or {}),
+            "portfolio": {
+                "holdings": [
+                    {
+                        "ticker": item.ticker,
+                        "company_name": item.company_name,
+                        "weight": round(float(item.weight), 4),
+                    }
+                    for item in portfolio.holdings
+                ],
+                "user_preferences": list(portfolio.user_preferences[:4]),
+            },
+            "agent_responses": [self._compact_agent_response(response) for response in responses],
+            "instructions": {
+                "action_values": ["CALL_AGENT", "FINALIZE_DOMAIN_REVIEW"],
+                "agent_values": [
+                    agent_id for agent_id in DOMAIN_ROUTING_AGENT_IDS if agent_id in self.domain_agents
+                ],
+                "depth_values": ["medium", "deep"],
+                "rules": [
+                    "Domain council agents review the Judge candidate decision; they do not gather first-layer facts.",
+                    "Choose at most one domain agent per round, then wait for its response.",
+                    "Do not call a domain agent that already answered.",
+                    "If every useful domain view has answered, choose FINALIZE_DOMAIN_REVIEW.",
+                    "Use Compliance for policy constraints, Risk for concentration/downside exposure, Execution for liquidity/market impact, Tax for tax effects, Macro for regime risk, Sentiment for market mood, and ESG for sustainability constraints.",
+                ],
+            },
+        }
+        try:
+            raw = self.client.chat_json(
+                system_prompt=JUDGE_DOMAIN_ACTION_SYSTEM_PROMPT,
+                user_prompt=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                temperature=0.0,
+            )
+        except ChatClientError:
+            return self._fallback_domain_action(
+                query=query,
+                portfolio=portfolio,
+                responses=responses,
+                called_agents=called_agents,
+                depth=depth,
+                trigger=trigger,
+                trigger_event=trigger_event,
+                candidate_plan=candidate_plan,
+            )
+        normalized = self._normalize_domain_action(
+            raw,
+            query=query,
+            portfolio=portfolio,
+            responses=responses,
+            called_agents=called_agents,
+            depth=depth,
+            trigger=trigger,
+            trigger_event=trigger_event,
+            candidate_plan=candidate_plan,
+        )
+        if normalized is None:
+            return self._fallback_domain_action(
                 query=query,
                 portfolio=portfolio,
                 responses=responses,
@@ -1612,7 +1717,8 @@ class JudgeOrchestrator:
             return result
 
         agent_id = canonical_agent_id(str(payload.get("agent_id", "")))
-        if agent_id not in {"disclosure", "news", "report", "profit", "cost"}:
+        allowed_agent_ids = set(self._routing_agent_ids())
+        if agent_id not in allowed_agent_ids:
             return None
         called_set = {canonical_agent_id(item) for item in called_agents}
         if agent_id in called_set:
@@ -1636,15 +1742,7 @@ class JudgeOrchestrator:
                     }
                 agent_id = preferred_push_agent
                 action_depth = "medium"
-        if trigger == "pull" and not called_set:
-            if (
-                agent_id != "disclosure"
-                and not self._is_explicit_news_request(query)
-                and not self._is_explicit_report_request(query)
-            ):
-                agent_id = "disclosure"
-                action_depth = depth
-        elif trigger == "pull" and "disclosure" in called_set and "news" not in called_set and agent_id == "report":
+        if trigger == "pull" and "disclosure" in called_set and "news" not in called_set and agent_id == "report":
             query_lower = query.casefold()
             if not any(token in query_lower for token in ("리포트", "report", "컨센서스")):
                 agent_id = "news"
@@ -1655,7 +1753,7 @@ class JudgeOrchestrator:
                         None,
                     ),
                 )
-        if trigger == "pull" and {"disclosure", "news"}.issubset(called_set):
+        if trigger == "pull" and agent_id in CORE_ROUTING_AGENT_IDS and {"disclosure", "news"}.issubset(called_set):
             disclosure_response = response_map.get("disclosure")
             news_response = response_map.get("news")
             if self._should_finalize_after_basic_scan(
@@ -1720,6 +1818,137 @@ class JudgeOrchestrator:
             }
         )
         return result
+
+    def _normalize_domain_action(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        query: str,
+        portfolio: PortfolioSnapshot,
+        responses: list[AgentResponse],
+        called_agents: list[str],
+        depth: str,
+        trigger: str,
+        trigger_event: TriggerEvent | None,
+        candidate_plan: Mapping[str, float] | None,
+    ) -> dict[str, Any] | None:
+        action = str(payload.get("action", "")).strip().upper()
+        if action not in {"CALL_AGENT", "FINALIZE_DOMAIN_REVIEW"}:
+            return None
+        normalized_plan = self._draft_candidate_plan(
+            query=query,
+            portfolio=portfolio,
+            responses=responses,
+            trigger=trigger,
+            trigger_event=trigger_event,
+            candidate_plan=candidate_plan,
+            allow_inference=False,
+        )
+        result: dict[str, Any] = {
+            "action": action,
+            "reason": str(payload.get("reason", "")).strip(),
+            "candidate_rebalance_plan": normalized_plan,
+            "layer": "domain",
+        }
+        enabled_domain_ids = {agent_id for agent_id in DOMAIN_ROUTING_AGENT_IDS if agent_id in self.domain_agents}
+        if not enabled_domain_ids:
+            result["action"] = "FINALIZE_DOMAIN_REVIEW"
+            result["reason"] = result["reason"] or "활성화된 도메인 에이전트가 없어 도메인 심의를 건너뜁니다."
+            return result
+        if action == "FINALIZE_DOMAIN_REVIEW":
+            return result
+
+        agent_id = canonical_agent_id(str(payload.get("agent_id", "")))
+        if agent_id not in enabled_domain_ids:
+            return None
+        called_set = {canonical_agent_id(item) for item in called_agents}
+        if agent_id in called_set:
+            return None
+        action_depth = str(payload.get("depth", "medium")).strip().lower()
+        if action_depth not in {"medium", "deep"}:
+            action_depth = "medium"
+
+        result.update(
+            {
+                "agent_id": agent_id,
+                "query": self._default_agent_query(agent_id=agent_id, trigger=trigger, responses=responses),
+                "context": self._default_agent_context(
+                    agent_id=agent_id,
+                    query=query,
+                    responses=responses,
+                    trigger_event=trigger_event,
+                    candidate_plan=normalized_plan,
+                ),
+                "depth": action_depth,
+                "fallback": self._default_agent_fallback(agent_id=agent_id, trigger=trigger),
+                "note": self._default_agent_note(
+                    agent_id=agent_id,
+                    query=query,
+                    responses=responses,
+                    trigger=trigger,
+                    trigger_event=trigger_event,
+                    candidate_plan=normalized_plan,
+                ),
+            }
+        )
+        return result
+
+    def _fallback_domain_action(
+        self,
+        *,
+        query: str,
+        portfolio: PortfolioSnapshot,
+        responses: list[AgentResponse],
+        called_agents: list[str],
+        depth: str,
+        trigger: str,
+        trigger_event: TriggerEvent | None,
+        candidate_plan: Mapping[str, float] | None,
+    ) -> dict[str, Any]:
+        del depth
+        called = {canonical_agent_id(item) for item in called_agents}
+        normalized_plan = self._draft_candidate_plan(
+            query=query,
+            portfolio=portfolio,
+            responses=responses,
+            trigger=trigger,
+            trigger_event=trigger_event,
+            candidate_plan=candidate_plan,
+            allow_inference=False,
+        )
+        next_domain = self._next_domain_agent(called)
+        if next_domain is None:
+            return {
+                "action": "FINALIZE_DOMAIN_REVIEW",
+                "reason": "필요한 도메인 심의가 완료되어 최종 판단으로 이동합니다.",
+                "candidate_rebalance_plan": normalized_plan,
+                "layer": "domain",
+            }
+        return {
+            "action": "CALL_AGENT",
+            "reason": f"Core 판단안을 최종화하기 전에 {next_domain} 전문 관점으로 검토합니다.",
+            "agent_id": next_domain,
+            "query": self._default_agent_query(agent_id=next_domain, trigger=trigger, responses=responses),
+            "context": self._default_agent_context(
+                agent_id=next_domain,
+                query=query,
+                responses=responses,
+                trigger_event=trigger_event,
+                candidate_plan=normalized_plan,
+            ),
+            "depth": "medium",
+            "fallback": self._default_agent_fallback(agent_id=next_domain, trigger=trigger),
+            "note": self._default_agent_note(
+                agent_id=next_domain,
+                query=query,
+                responses=responses,
+                trigger=trigger,
+                trigger_event=trigger_event,
+                candidate_plan=normalized_plan,
+            ),
+            "candidate_rebalance_plan": normalized_plan,
+            "layer": "domain",
+        }
 
     def _fallback_judge_action(
         self,
@@ -2086,6 +2315,8 @@ class JudgeOrchestrator:
                 context_parts.append(f"후보 리밸런싱 초안: {dict(candidate_plan)}")
         else:
             context_parts.append(f"원 사용자 요청: {query}")
+            if agent_id in DOMAIN_ROUTING_AGENT_IDS and candidate_plan:
+                context_parts.append(f"후보 리밸런싱 초안: {dict(candidate_plan)}")
         return " | ".join(part for part in context_parts if part)
 
     def _default_agent_fallback(self, *, agent_id: str, trigger: str) -> str | None:
@@ -2746,13 +2977,21 @@ class JudgeOrchestrator:
         for action in judge_actions or []:
             action_name = str(action.get("action") or "").strip().upper()
             agent_id = str(action.get("agent_id") or "").strip()
+            layer = str(action.get("layer") or "core").strip().lower()
             reason = str(action.get("reason") or "").strip()
             candidate_plan = action.get("candidate_rebalance_plan", {})
             called_before = action.get("called_agents_before", [])
             called_before_text = ", ".join(str(item) for item in called_before) if called_before else "없음"
             if action_name == "CALL_AGENT" and agent_id:
-                summary = f"Judge가 현재 관찰을 바탕으로 {agent_id} 에이전트만 호출하기로 결정했습니다."
-                routing_query = f"다음 호출 결정: {agent_id}"
+                if layer == "domain":
+                    summary = f"Judge가 Core 판단안을 {agent_id} 도메인 관점으로 심의하기로 결정했습니다."
+                    routing_query = f"도메인 심의 호출: {agent_id}"
+                else:
+                    summary = f"Judge가 현재 관찰을 바탕으로 {agent_id} 에이전트만 호출하기로 결정했습니다."
+                    routing_query = f"다음 호출 결정: {agent_id}"
+            elif action_name == "FINALIZE_DOMAIN_REVIEW":
+                summary = "Judge가 도메인 심의를 마치고 합의 계산으로 이동하기로 결정했습니다."
+                routing_query = "도메인 심의 종료"
             else:
                 summary = "Judge가 추가 호출 없이 최종 판단으로 이동하기로 결정했습니다."
                 routing_query = "추가 호출 여부 판단"
