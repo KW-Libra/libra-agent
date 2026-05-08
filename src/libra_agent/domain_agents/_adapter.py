@@ -14,9 +14,10 @@ LIBRA ``InformationAgentProtocol.run(...) → AgentResponse`` 로 변환.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import threading
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, Iterable
 
 from libra_agent.libra_models import (
     AgentResponse,
@@ -51,6 +52,65 @@ _VOTE_TO_OPINION: dict[str, str] = {
 }
 
 
+def _parse_preference_value(raw: str) -> Any:
+    text = raw.strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered in {"none", "null"}:
+        return None
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    try:
+        return ast.literal_eval(text)
+    except (SyntaxError, ValueError):
+        pass
+    try:
+        return float(text) if "." in text else int(text)
+    except ValueError:
+        return text
+
+
+def _as_preference_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, Iterable):
+        return [str(item) for item in value if str(item).strip()]
+    return [str(value)]
+
+
+def _parse_user_preferences(items: Iterable[str]) -> dict[str, Any]:
+    preferences: dict[str, Any] = {}
+    notes: list[str] = []
+    for raw_item in items:
+        item = str(raw_item).strip()
+        if not item:
+            continue
+        if "=" in item:
+            key, raw_value = item.split("=", 1)
+            key = key.strip()
+            if key:
+                preferences[key] = _parse_preference_value(raw_value)
+                continue
+        preferences[item] = True
+        notes.append(item)
+
+    exclusions = _as_preference_list(
+        preferences.get("excluded_sectors")
+        or preferences.get("exclusions")
+        or preferences.get("esg_exclusions")
+    )
+    preferences["excluded_sectors"] = exclusions
+    preferences["exclusions"] = exclusions
+    preferences["esg_exclusions"] = exclusions
+    preferences["preference_notes"] = notes
+    if "approval_mode" in preferences and "approval" not in preferences:
+        preferences["approval"] = preferences["approval_mode"]
+    return preferences
+
+
 def portfolio_snapshot_to_domain_context(
     portfolio: PortfolioSnapshot,
     *,
@@ -73,13 +133,18 @@ def portfolio_snapshot_to_domain_context(
             "current_price": float(h.last_price or 0),
             "average_price": float(h.average_price or 0),
             "market_value": float(h.market_value_krw or 0),
-            "sector": "기타",
+            "sector": h.sector or "기타",
+            "esg_score": h.esg_score,
+            "carbon_intensity": h.carbon_intensity,
         })
+
+    preferences = _parse_user_preferences(portfolio.user_preferences)
+    preferences["cash_weight"] = float(portfolio.cash_weight or 0.0)
 
     return DomainPortfolioContext(
         user_id=user_id,
         holdings=jy_holdings,
-        preferences={k: True for k in portfolio.user_preferences},
+        preferences=preferences,
         total_value=float(portfolio.total_value_krw or 0.0),
         proposed_trades=proposed_trades or [],
         market_context_str=market_context_str,

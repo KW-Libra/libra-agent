@@ -127,8 +127,11 @@ def apply_baselines(scenario: Mapping[str, Any]) -> dict[str, str]:
 def profile_preferences(profile: Mapping[str, Any]) -> list[str]:
     preferences = [str(item) for item in profile.get("preferences", []) if str(item).strip()]
     structured = [
+        f"approval_mode={profile.get('approval_mode')}",
+        f"cash_min_weight={profile.get('cash_min_weight')}",
         f"excluded_sectors={profile.get('excluded_sectors', [])}",
         f"max_single_weight={profile.get('max_single_weight')}",
+        f"max_sector_weight={profile.get('max_sector_weight', {})}",
         f"esg_min_score={profile.get('esg_min_score')}",
         f"approval_required_above_krw={profile.get('approval_required_above_krw')}",
         f"tax_loss_harvesting_pref={profile.get('tax_loss_harvesting_pref')}",
@@ -151,6 +154,9 @@ def build_portfolio(scenario: Mapping[str, Any], profile: Mapping[str, Any], uni
                 "company_name": str(stock.get("name") or item.get("name") or symbol),
                 "weight": current_weight,
                 "aliases": list(stock.get("aliases", [])),
+                "sector": stock.get("sector"),
+                "esg_score": stock.get("esg_score"),
+                "carbon_intensity": stock.get("carbon_intensity"),
                 "shares": item.get("shares"),
                 "last_price": item.get("last_price"),
                 "average_price": item.get("average_price"),
@@ -299,7 +305,17 @@ def build_agent_payload(scenario: Mapping[str, Any], profiles: Mapping[str, Any]
 def call_libra(base_url: str, payload: Mapping[str, Any], *, timeout_seconds: float) -> dict[str, Any]:
     with httpx.Client(timeout=timeout_seconds) as client:
         response = client.post(f"{base_url.rstrip('/')}/v1/judge-runs", json=payload)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = response.text
+            try:
+                parsed = response.json()
+                if isinstance(parsed, Mapping):
+                    detail = str(parsed.get("detail") or parsed)
+            except ValueError:
+                pass
+            raise RuntimeError(f"{exc}; response_detail={detail[:1000]}") from exc
         return response.json()
 
 
@@ -387,6 +403,32 @@ def write_call_heatmap_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             writer.writerow([row["scenario_id"], mode, *(1 if agent in called else 0 for agent in AGENTS)])
 
 
+def write_agent_frequency_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    counts = {agent: 0 for agent in AGENTS}
+    actual_rows = [row for row in rows if row["called_agents"]]
+    denominator_rows = actual_rows or rows
+    for row in denominator_rows:
+        called = set(row["called_agents"] or row["expected_agents"])
+        for agent in called:
+            if agent in counts:
+                counts[agent] += 1
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["agent", "called_count", "scenario_count", "call_rate", "mode"])
+        for agent in AGENTS:
+            scenario_count = len(denominator_rows)
+            call_rate = counts[agent] / scenario_count if scenario_count else 0.0
+            writer.writerow(
+                [
+                    agent,
+                    counts[agent],
+                    scenario_count,
+                    f"{call_rate:.3f}",
+                    "actual" if actual_rows else "expected",
+                ]
+            )
+
+
 def write_call_heatmap_svg(path: Path, rows: list[dict[str, Any]]) -> None:
     cell = 24
     label_w = 190
@@ -420,15 +462,47 @@ def write_summary_md(path: Path, rows: list[dict[str, Any]]) -> None:
     lines = [
         "# LIBRA Benchmark Summary",
         "",
-        "| scenario | LIBRA | called agents | baselines | note |",
-        "|---|---|---|---|---|",
+        "| scenario | mode | LIBRA | called agents | baselines | note |",
+        "|---|---|---|---|---|---|",
     ]
     for row in rows:
         baselines = ", ".join(f"{name}={row['computed_baselines'].get(name)}" for name in BASELINES)
         called = ", ".join(row["called_agents"] or row["expected_agents"])
+        mode = "actual" if row["called_agents"] else "expected"
         note = row["summary"] or row["error"] or ""
-        lines.append(f"| {row['scenario_id']} | {row['libra_decision'] or '(not run)'} | {called} | {baselines} | {note} |")
+        lines.append(f"| {row['scenario_id']} | {mode} | {row['libra_decision'] or '(not run)'} | {called} | {baselines} | {note} |")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_case_studies_md(path: Path, rows: list[dict[str, Any]]) -> None:
+    lines = [
+        "# LIBRA Case Studies",
+        "",
+        "각 시나리오는 expected 호출 패턴에 맞추기 위한 정답지가 아니라, 실제 Judge 호출 결과를 분석하기 위한 controlled input이다.",
+        "",
+    ]
+    for row in rows:
+        baselines = row["computed_baselines"]
+        called = row["called_agents"] or row["expected_agents"]
+        expected = row["expected_agents"]
+        added = [agent for agent in called if agent not in expected]
+        missing = [agent for agent in expected if agent not in called]
+        lines.extend(
+            [
+                f"## {row['scenario_id']} — {row['title']}",
+                "",
+                f"- 결정: {row['libra_decision'] or '(not run)'}",
+                f"- 호출 에이전트: {', '.join(called) if called else '(none)'}",
+                f"- 기대 대비 추가 호출: {', '.join(added) if added else '없음'}",
+                f"- 기대 대비 미호출: {', '.join(missing) if missing else '없음'}",
+                f"- baseline 결정: "
+                + ", ".join(f"{name}={baselines.get(name)}" for name in BASELINES),
+                f"- LIBRA만 제공하는 정보: {', '.join(row['libra_only_output'])}",
+                f"- 요약: {row['summary'] or row['error'] or '실제 LIBRA 실행 전 expected 패턴만 기록됨.'}",
+                "",
+            ]
+        )
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def run(args: argparse.Namespace) -> Path:
@@ -474,8 +548,10 @@ def run(args: argparse.Namespace) -> Path:
     write_json(out_dir / "rows.json", rows)
     write_decision_matrix(out_dir / "decision_matrix.csv", rows)
     write_call_heatmap_csv(out_dir / "call_heatmap.csv", rows)
+    write_agent_frequency_csv(out_dir / "agent_frequency.csv", rows)
     write_call_heatmap_svg(out_dir / "call_heatmap.svg", rows)
     write_summary_md(out_dir / "summary.md", rows)
+    write_case_studies_md(out_dir / "case_studies.md", rows)
     return out_dir
 
 

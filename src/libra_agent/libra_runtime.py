@@ -1418,12 +1418,20 @@ class JudgeOrchestrator:
         trigger_event: TriggerEvent | None,
         candidate_plan: Mapping[str, float] | None = None,
     ) -> dict[str, Any]:
+        already_called = [canonical_agent_id(item) for item in called_agents]
+        valid_next_agents = [
+            agent_id
+            for agent_id in self._routing_agent_ids()
+            if agent_id not in set(already_called)
+        ]
         payload = {
             "query": query,
             "trigger": trigger,
             "trigger_event": trigger_event.to_dict() if trigger_event else None,
             "depth": depth,
             "called_agents": list(called_agents),
+            "already_called_agent_values": already_called,
+            "valid_next_agent_values": valid_next_agents,
             "candidate_rebalance_plan": dict(candidate_plan or {}),
             "portfolio": {
                 "holdings": [
@@ -1444,6 +1452,7 @@ class JudgeOrchestrator:
                 "rules": JUDGE_ACTION_RULES,
                 "validator_contract": [
                     "agent_id must be one of the exact lowercase agent_values.",
+                    "agent_id must be one of valid_next_agent_values unless action is FINALIZE.",
                     "CALL_AGENT profit or cost is rejected when candidate_rebalance_plan is empty.",
                     "candidate_rebalance_plan must use portfolio tickers with nonzero weight deltas.",
                     "If no safe next agent is justified, use FINALIZE.",
@@ -1493,19 +1502,35 @@ class JudgeOrchestrator:
         *,
         context_payload: Mapping[str, Any],
     ) -> dict[str, Any]:
+        already_called = [
+            canonical_agent_id(item)
+            for item in context_payload.get("called_agents", [])
+        ]
+        all_agents = [
+            canonical_agent_id(item)
+            for item in (context_payload.get("instructions", {}) or {}).get("agent_values", [])
+        ]
+        valid_next_agents = [
+            agent_id
+            for agent_id in all_agents
+            if agent_id not in set(already_called)
+        ]
         repair_payload = {
             "invalid_response": dict(invalid_payload),
+            "invalid_agent_id": canonical_agent_id(str(invalid_payload.get("agent_id", ""))),
+            "already_called_agent_values": already_called,
+            "valid_next_agent_values": valid_next_agents,
             "validator_error": (
                 "The previous action was rejected by LIBRA's safety validator. "
                 "Return a corrected JSON action only; do not explain outside JSON."
             ),
             "repair_rules": [
                 "Use action CALL_AGENT or FINALIZE only.",
-                "Use exact lowercase agent_id values from instructions.agent_values.",
+                "For CALL_AGENT, use exact lowercase agent_id values from valid_next_agent_values only.",
                 "Do not call an already-called agent.",
                 "CALL_AGENT profit or cost is invalid if candidate_rebalance_plan is empty.",
                 "If you want profit or cost, include a concrete nonempty candidate_rebalance_plan with portfolio tickers and nonzero weight deltas.",
-                "If no valid trade-review action exists, call news/report when justified or choose FINALIZE.",
+                "If the desired agent is already called or no valid trade-review action exists, choose FINALIZE.",
             ],
             "state": context_payload,
         }

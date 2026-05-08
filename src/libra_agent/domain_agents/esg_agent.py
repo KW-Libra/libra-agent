@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from .base import BaseAgent, AgentVerdict, PortfolioContext
 
@@ -59,6 +60,26 @@ SECTOR_CARBON_INTENSITY: dict[str, float] = {
 }
 
 
+def _as_float(value: Any, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    try:
+        return [str(item) for item in value if str(item).strip()]
+    except TypeError:
+        return [str(value)]
+
+
 class ESGAgent(BaseAgent):
     agent_id = "esg"
     name = "Esme"
@@ -74,10 +95,15 @@ class ESGAgent(BaseAgent):
         portfolio_carbon = 0.0
         esg_details = []
 
-        exclusions: list[str] = ctx.preferences.get("esg_exclusions", [])
-        esg_target: float = float(ctx.preferences.get("esg_min_score", 50.0))
+        exclusions = _as_list(
+            ctx.preferences.get("esg_exclusions")
+            or ctx.preferences.get("excluded_sectors")
+            or ctx.preferences.get("exclusions")
+        )
+        esg_target = _as_float(ctx.preferences.get("esg_min_score"), 50.0)
 
         violations = []
+        below_target = []
 
         for h in ctx.holdings:
             symbol  = h.get("symbol", "?")
@@ -105,6 +131,8 @@ class ESGAgent(BaseAgent):
             for excl in exclusions:
                 if excl.lower() in sector_lower or excl.lower() in symbol_upper.lower():
                     violations.append(f"{symbol}: ESG 제외 '{excl}' 위반")
+            if esg_target > self.MIN_ESG_SCORE and esg_score < esg_target:
+                below_target.append(f"{symbol}: ESG {esg_score:.1f} < target {esg_target:.1f}")
 
         # 제안 거래에도 ESG 체크
         trade_esg_violations = []
@@ -116,14 +144,14 @@ class ESGAgent(BaseAgent):
                 if excl.lower() in sector.lower():
                     trade_esg_violations.append(f"신규 {trade.get('action')} {sym}: '{excl}' 위반")
 
-        all_violations = violations + trade_esg_violations
+        all_violations = violations + trade_esg_violations + below_target
 
         signals = [
             {
                 "label": "포트폴리오 ESG 점수",
                 "value": f"{portfolio_esg:.1f} / 100",
                 "target": esg_target,
-                "breached": portfolio_esg < self.MIN_ESG_SCORE,
+                "breached": portfolio_esg < esg_target,
             },
             {
                 "label": "탄소강도",
@@ -134,11 +162,11 @@ class ESGAgent(BaseAgent):
             {
                 "label": "ESG 위반",
                 "value": len(all_violations),
-                "details": all_violations[:3],
+                "details": all_violations[:5],
             },
         ]
 
-        # 즉시 거부 조건 (ESG 위반)
+        # 명시적 사용자 ESG 기준 위반은 승인 없이 통과시키지 않는다.
         if all_violations:
             return AgentVerdict(
                 agent_id=self.agent_id,

@@ -239,6 +239,9 @@ class PortfolioHolding:
     company_name: str
     weight: float
     aliases: tuple[str, ...] = ()
+    sector: str | None = None
+    esg_score: float | None = None
+    carbon_intensity: float | None = None
     shares: float | None = None
     last_price: float | None = None
     average_price: float | None = None
@@ -252,6 +255,9 @@ class PortfolioHolding:
             company_name=_as_str(payload.get("company_name") or payload.get("name")),
             weight=_clamp(_as_float(payload.get("weight"), 0.0), 0.0, 1.0),
             aliases=tuple(_as_str(item) for item in _as_list(payload.get("aliases")) if _as_str(item)),
+            sector=_as_str(payload.get("sector")) or None,
+            esg_score=_as_float(payload.get("esg_score")) if payload.get("esg_score") is not None else None,
+            carbon_intensity=_as_float(payload.get("carbon_intensity")) if payload.get("carbon_intensity") is not None else None,
             shares=_as_float(payload.get("shares")) if payload.get("shares") is not None else None,
             last_price=_as_float(payload.get("last_price")) if payload.get("last_price") is not None else None,
             average_price=_as_float(payload.get("average_price")) if payload.get("average_price") is not None else None,
@@ -265,6 +271,9 @@ class PortfolioHolding:
             "company_name": self.company_name,
             "weight": round(float(self.weight), 6),
             "aliases": list(self.aliases),
+            "sector": self.sector,
+            "esg_score": self.esg_score,
+            "carbon_intensity": self.carbon_intensity,
             "shares": self.shares,
             "last_price": self.last_price,
             "average_price": self.average_price,

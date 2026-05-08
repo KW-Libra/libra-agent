@@ -45,7 +45,11 @@ class BenchmarkScenarioTests(unittest.TestCase):
 
         self.assertEqual(payload["trigger"], "pull")
         self.assertEqual(payload["portfolio"]["holdings"][0]["ticker"], "005930")
-        self.assertIn("max_single_weight=", payload["portfolio"]["user_preferences"][-4])
+        self.assertEqual(payload["portfolio"]["holdings"][0]["sector"], "반도체")
+        self.assertEqual(payload["portfolio"]["holdings"][0]["esg_score"], 78)
+        self.assertTrue(
+            any(item.startswith("max_single_weight=") for item in payload["portfolio"]["user_preferences"])
+        )
         self.assertGreater(len(payload["knowledge_base"]["events"]), 0)
 
     def test_portfolio_definition_targets_are_normalized_when_enabled(self) -> None:

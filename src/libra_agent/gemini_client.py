@@ -44,7 +44,6 @@ class GeminiChatClient:
         temperature: float = 0.1,
     ) -> dict[str, Any]:
         self._validate_api_key()
-        self._throttle_generate()
         payload = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
@@ -54,12 +53,24 @@ class GeminiChatClient:
                 "responseMimeType": "application/json",
             },
         }
-        try:
-            with self._http_client() as client:
-                response = client.post(self._generate_url(), json=payload)
-                response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise GeminiClientError(f"Failed to call Gemini API: {exc}") from exc
+        retry_attempts = self._retry_attempts()
+        for attempt in range(retry_attempts + 1):
+            self._throttle_generate()
+            try:
+                with self._http_client() as client:
+                    response = client.post(self._generate_url(), json=payload)
+                    response.raise_for_status()
+                break
+            except httpx.HTTPStatusError as exc:
+                if not self._should_retry_status(exc.response.status_code, attempt, retry_attempts):
+                    raise GeminiClientError(f"Failed to call Gemini API: {self._redact_api_key(exc)}") from exc
+                time.sleep(self._retry_delay_seconds(attempt))
+            except httpx.HTTPError as exc:
+                if attempt >= retry_attempts:
+                    raise GeminiClientError(f"Failed to call Gemini API: {self._redact_api_key(exc)}") from exc
+                time.sleep(self._retry_delay_seconds(attempt))
+        else:  # pragma: no cover - loop always breaks or raises
+            raise GeminiClientError("Failed to call Gemini API after retries.")
 
         text = self._extract_text(response.json())
         if not text.strip():
@@ -73,7 +84,7 @@ class GeminiChatClient:
                 response = client.get(self._model_url())
                 response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise GeminiClientError(f"Gemini API is not reachable at {self.base_url}: {exc}") from exc
+            raise GeminiClientError(f"Gemini API is not reachable at {self.base_url}: {self._redact_api_key(exc)}") from exc
 
     def _validate_api_key(self) -> None:
         if not self.api_key:
@@ -107,6 +118,32 @@ class GeminiChatClient:
         if free_tier and provider == "gemini":
             return 13.0
         return 0.0
+
+    def _retry_attempts(self) -> int:
+        raw = os.environ.get("LIBRA_GEMINI_RETRY_ATTEMPTS")
+        if raw is None:
+            return 2
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return 2
+
+    def _retry_delay_seconds(self, attempt: int) -> float:
+        raw = os.environ.get("LIBRA_GEMINI_RETRY_BASE_DELAY_SECONDS")
+        try:
+            base = max(0.0, float(raw)) if raw is not None else 2.0
+        except ValueError:
+            base = 2.0
+        return base * (attempt + 1)
+
+    def _should_retry_status(self, status_code: int, attempt: int, retry_attempts: int) -> bool:
+        return attempt < retry_attempts and status_code in {429, 500, 502, 503, 504}
+
+    def _redact_api_key(self, value: Any) -> str:
+        text = str(value)
+        if self.api_key:
+            text = text.replace(self.api_key, "<redacted>")
+        return text
 
     def _http_client(self, *, timeout: float | None = None) -> httpx.Client:
         return httpx.Client(

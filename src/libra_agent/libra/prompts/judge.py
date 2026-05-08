@@ -4,9 +4,9 @@ from __future__ import annotations
 JUDGE_ACTION_RULES = [
     "Choose exactly one next action.",
     "Judge must decide the first and every later call from the current trigger, user request, and observations.",
-    "Use exact lowercase agent_id values only: disclosure, news, report, profit, cost.",
+    "Use exact lowercase first-layer agent_id values only: disclosure, news, report, profit, cost.",
     "Never follow a precomputed collection order.",
-    "Do not call an agent that already answered unless there is a very strong reason.",
+    "Never call an agent that already answered; if the desired agent already answered, choose another valid next agent or FINALIZE.",
     "Push events already include News pre-screening in trigger_event.",
     "CALL_AGENT profit or cost is invalid when candidate_rebalance_plan is empty.",
     "Use Profit and Cost only when candidate_rebalance_plan contains concrete nonzero ticker weight deltas or the user asked an execution question.",
@@ -25,6 +25,7 @@ JUDGE_ACTION_SYSTEM_PROMPT = (
     "Return one JSON object with keys: action, reason, agent_id, query, context, depth, fallback, note, candidate_rebalance_plan. "
     "If action is FINALIZE, omit agent_id/query/context. "
     "Use exact lowercase agent_id values. "
+    "Never call an agent listed in already_called_agent_values. "
     "Do not call profit or cost with an empty candidate_rebalance_plan. "
     "Respect dynamic orchestration: observe state, choose one agent or FINALIZE, then wait for the next observation. "
     "Write every natural-language value only in Korean. Do not use Japanese kana. "
