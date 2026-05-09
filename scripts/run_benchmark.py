@@ -34,6 +34,28 @@ BASELINES = [
     "equal_weight_calendar",
 ]
 
+AGENT_LABELS = {
+    "disclosure": "Disclosure",
+    "news": "News",
+    "report": "Report",
+    "profit": "Profit",
+    "cost": "Cost",
+    "risk": "Risk",
+    "tax": "Tax",
+    "compliance": "Compliance",
+    "macro": "Macro",
+    "sentiment": "Sentiment",
+    "execution": "Execution",
+    "esg": "ESG",
+}
+
+BASELINE_LABELS = {
+    "buy_hold": "B&H",
+    "calendar_monthly": "Calendar",
+    "threshold_5pct": "Threshold",
+    "equal_weight_calendar": "1/N",
+}
+
 
 @dataclass(frozen=True)
 class BenchmarkPaths:
@@ -353,10 +375,12 @@ def build_row(
     return {
         "scenario_id": scenario.get("scenario_id"),
         "title": scenario.get("title"),
+        "description": scenario.get("description", ""),
         "simulated_date": scenario.get("simulated_date"),
         "profile_id": scenario.get("profile_id"),
         "expected_agents": list(expected.get("agents", []) or []),
         "expected_decision": expected.get("decision", ""),
+        "expected_purpose": expected.get("purpose", ""),
         "computed_baselines": dict(computed_baselines),
         "declared_baselines": dict(scenario.get("baseline_decisions", {}) or {}),
         "libra_decision": summary["libra_decision"],
@@ -370,6 +394,25 @@ def build_row(
     }
 
 
+def row_status(row: Mapping[str, Any]) -> str:
+    if row.get("called_agents"):
+        return "actual"
+    if row.get("error"):
+        return "error"
+    return "expected"
+
+
+def agents_for_row(row: Mapping[str, Any]) -> list[str]:
+    return list(row.get("called_agents") or row.get("expected_agents") or [])
+
+
+def short_text(value: Any, *, limit: int = 220) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "..."
+
+
 def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
@@ -377,16 +420,17 @@ def write_json(path: Path, payload: Any) -> None:
 def write_decision_matrix(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["scenario_id", "title", *BASELINES, "LIBRA", "called_agents", "LIBRA_only_output", "note"])
+        writer.writerow(["scenario_id", "status", "title", *BASELINES, "LIBRA", "called_agents", "LIBRA_only_output", "note"])
         for row in rows:
             baselines = row["computed_baselines"]
             writer.writerow(
                 [
                     row["scenario_id"],
+                    row_status(row),
                     row["title"],
                     *(baselines.get(name, "") for name in BASELINES),
                     row["libra_decision"] or "(not run)",
-                    " ".join(row["called_agents"] or row["expected_agents"]),
+                    " ".join(agents_for_row(row)),
                     "+".join(row["libra_only_output"]),
                     row["summary"] or row["error"],
                 ]
@@ -398,8 +442,8 @@ def write_call_heatmap_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.writer(handle)
         writer.writerow(["scenario_id", "mode", *AGENTS])
         for row in rows:
-            called = set(row["called_agents"] or row["expected_agents"])
-            mode = "actual" if row["called_agents"] else "expected"
+            called = set(agents_for_row(row))
+            mode = row_status(row)
             writer.writerow([row["scenario_id"], mode, *(1 if agent in called else 0 for agent in AGENTS)])
 
 
@@ -408,7 +452,7 @@ def write_agent_frequency_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     actual_rows = [row for row in rows if row["called_agents"]]
     denominator_rows = actual_rows or rows
     for row in denominator_rows:
-        called = set(row["called_agents"] or row["expected_agents"])
+        called = set(agents_for_row(row))
         for agent in called:
             if agent in counts:
                 counts[agent] += 1
@@ -446,8 +490,8 @@ def write_call_heatmap_svg(path: Path, rows: list[dict[str, Any]]) -> None:
         lines.append(f'<text class="small" x="{x}" y="112" transform="rotate(-55 {x} 112)">{agent}</text>')
     for r_idx, row in enumerate(rows):
         y = top + r_idx * cell
-        called = set(row["called_agents"] or row["expected_agents"])
-        mode = "actual" if row["called_agents"] else "expected"
+        called = set(agents_for_row(row))
+        mode = row_status(row)
         lines.append(f'<text x="16" y="{y + 16}">{row["scenario_id"]}</text>')
         lines.append(f'<text class="small" x="126" y="{y + 16}">{mode}</text>')
         for c_idx, agent in enumerate(AGENTS):
@@ -458,19 +502,83 @@ def write_call_heatmap_svg(path: Path, rows: list[dict[str, Any]]) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def write_slide_heatmap_svg(path: Path, rows: list[dict[str, Any]]) -> None:
+    width = 1440
+    height = 810
+    margin_x = 64
+    top = 178
+    row_h = 46
+    label_w = 315
+    cell_w = 72
+    cell_h = 30
+    core_count = 5
+    status_colors = {
+        "actual": "#16a34a",
+        "error": "#dc2626",
+        "expected": "#64748b",
+    }
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        '<rect width="100%" height="100%" fill="#f8fafc"/>',
+        '<style>text{font-family:Arial,"Malgun Gothic",sans-serif;fill:#111827}.muted{fill:#64748b}.tiny{font-size:14px}.small{font-size:17px}.title{font-size:38px;font-weight:800}.subtitle{font-size:18px;fill:#475569}.axis{font-size:15px;font-weight:700;fill:#334155}.sid{font-size:16px;font-weight:700}.on{fill:#2563eb}.off{fill:#e2e8f0}.core{fill:#1d4ed8}.domain{fill:#059669}</style>',
+        f'<text x="{margin_x}" y="68" class="title">LIBRA Dynamic Agent Call Pattern</text>',
+        f'<text x="{margin_x}" y="104" class="subtitle">Actual 호출이 있으면 actual, LLM 실행 실패는 error, 라이브 실행 전 행은 expected 가설로 표시</text>',
+    ]
+    agent_x0 = margin_x + label_w
+    core_w = core_count * cell_w
+    domain_w = (len(AGENTS) - core_count) * cell_w
+    lines.extend(
+        [
+            f'<rect x="{agent_x0}" y="124" width="{core_w - 10}" height="28" rx="4" fill="#dbeafe"/>',
+            f'<rect x="{agent_x0 + core_w}" y="124" width="{domain_w - 10}" height="28" rx="4" fill="#dcfce7"/>',
+            f'<text x="{agent_x0 + 12}" y="144" class="axis">Core 5</text>',
+            f'<text x="{agent_x0 + core_w + 12}" y="144" class="axis">Domain Council 7</text>',
+        ]
+    )
+    for idx, agent in enumerate(AGENTS):
+        x = agent_x0 + idx * cell_w + 5
+        label = AGENT_LABELS[agent]
+        lines.append(f'<text x="{x}" y="168" class="tiny muted" transform="rotate(-28 {x} 168)">{label}</text>')
+    for r_idx, row in enumerate(rows):
+        y = top + r_idx * row_h
+        status = row_status(row)
+        called = set(agents_for_row(row))
+        lines.append(f'<text x="{margin_x}" y="{y + 22}" class="sid">{row["scenario_id"]}</text>')
+        lines.append(f'<text x="{margin_x + 170}" y="{y + 22}" class="tiny" fill="{status_colors[status]}">{status.upper()}</text>')
+        for c_idx, agent in enumerate(AGENTS):
+            x = agent_x0 + c_idx * cell_w
+            if agent in called:
+                color = "#1d4ed8" if c_idx < core_count else "#059669"
+                lines.append(f'<rect x="{x}" y="{y}" width="{cell_h}" height="{cell_h}" rx="6" fill="{color}"/>')
+                lines.append(f'<text x="{x + 10}" y="{y + 21}" font-size="15" font-weight="800" fill="#ffffff">✓</text>')
+            else:
+                lines.append(f'<rect x="{x}" y="{y}" width="{cell_h}" height="{cell_h}" rx="6" fill="#e2e8f0"/>')
+    legend_y = height - 70
+    lines.extend(
+        [
+            f'<rect x="{margin_x}" y="{legend_y}" width="24" height="24" rx="5" fill="#1d4ed8"/><text x="{margin_x + 36}" y="{legend_y + 18}" class="small">Core agent called</text>',
+            f'<rect x="{margin_x + 230}" y="{legend_y}" width="24" height="24" rx="5" fill="#059669"/><text x="{margin_x + 266}" y="{legend_y + 18}" class="small">Domain council called</text>',
+            f'<rect x="{margin_x + 520}" y="{legend_y}" width="24" height="24" rx="5" fill="#e2e8f0"/><text x="{margin_x + 556}" y="{legend_y + 18}" class="small">Not called</text>',
+        ]
+    )
+    lines.append("</svg>")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def write_summary_md(path: Path, rows: list[dict[str, Any]]) -> None:
     lines = [
         "# LIBRA Benchmark Summary",
         "",
-        "| scenario | mode | LIBRA | called agents | baselines | note |",
-        "|---|---|---|---|---|---|",
+        "| scenario | status | LIBRA | called/expected agents | baselines | note |",
+        "|---|---:|---|---|---|---|",
     ]
     for row in rows:
         baselines = ", ".join(f"{name}={row['computed_baselines'].get(name)}" for name in BASELINES)
-        called = ", ".join(row["called_agents"] or row["expected_agents"])
-        mode = "actual" if row["called_agents"] else "expected"
-        note = row["summary"] or row["error"] or ""
-        lines.append(f"| {row['scenario_id']} | {mode} | {row['libra_decision'] or '(not run)'} | {called} | {baselines} | {note} |")
+        called = ", ".join(agents_for_row(row))
+        note = short_text(row["summary"] or row["error"] or "")
+        lines.append(
+            f"| {row['scenario_id']} | {row_status(row)} | {row['libra_decision'] or '(not run)'} | {called} | {baselines} | {note} |"
+        )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -483,7 +591,7 @@ def write_case_studies_md(path: Path, rows: list[dict[str, Any]]) -> None:
     ]
     for row in rows:
         baselines = row["computed_baselines"]
-        called = row["called_agents"] or row["expected_agents"]
+        called = agents_for_row(row)
         expected = row["expected_agents"]
         added = [agent for agent in called if agent not in expected]
         missing = [agent for agent in expected if agent not in called]
@@ -491,7 +599,9 @@ def write_case_studies_md(path: Path, rows: list[dict[str, Any]]) -> None:
             [
                 f"## {row['scenario_id']} — {row['title']}",
                 "",
+                f"- 실행 상태: {row_status(row)}",
                 f"- 결정: {row['libra_decision'] or '(not run)'}",
+                f"- 시나리오 목적: {row.get('expected_purpose') or row.get('description') or '미기재'}",
                 f"- 호출 에이전트: {', '.join(called) if called else '(none)'}",
                 f"- 기대 대비 추가 호출: {', '.join(added) if added else '없음'}",
                 f"- 기대 대비 미호출: {', '.join(missing) if missing else '없음'}",
@@ -503,6 +613,73 @@ def write_case_studies_md(path: Path, rows: list[dict[str, Any]]) -> None:
             ]
         )
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_presentation_report_md(path: Path, rows: list[dict[str, Any]]) -> None:
+    status_counts = {status: sum(1 for row in rows if row_status(row) == status) for status in ("actual", "error", "expected")}
+    actual_or_expected = rows
+    agent_counts = {agent: 0 for agent in AGENTS}
+    for row in actual_or_expected:
+        for agent in agents_for_row(row):
+            if agent in agent_counts:
+                agent_counts[agent] += 1
+    lines = [
+        "# Presentation Benchmark Brief",
+        "",
+        "## 실행 상태",
+        "",
+        f"- 전체 시나리오: {len(rows)}",
+        f"- 실제 LIBRA 결과 확보: {status_counts['actual']}",
+        f"- LLM/API 오류로 expected 가설만 남은 행: {status_counts['error']}",
+        f"- `--skip-libra` expected-only 행: {status_counts['expected']}",
+        "",
+        "## 발표에서 바로 쓸 메시지",
+        "",
+        "- `expected`는 정답지가 아니라 시나리오 설계 가설이다.",
+        "- `actual`이 expected와 다르면 시나리오를 고치는 것이 아니라 Judge가 왜 다르게 호출했는지 분석한다.",
+        "- `error`는 시스템이 deterministic fallback 없이 LLM 실패를 실패로 드러낸 결과다. 발표용 라이브 결과에서는 quota가 풀린 뒤 다시 실행해야 한다.",
+        "- baseline 4종은 한 단어 결정만 내리지만, LIBRA는 결정, 호출 패턴, trace, 근거 리포트를 함께 남긴다.",
+        "",
+        "## Agent 호출 빈도",
+        "",
+        "| agent | layer | count |",
+        "|---|---|---:|",
+    ]
+    for agent in AGENTS:
+        layer = "core" if AGENTS.index(agent) < 5 else "domain"
+        lines.append(f"| {AGENT_LABELS[agent]} | {layer} | {agent_counts[agent]} |")
+    lines.extend(
+        [
+            "",
+            "## Decision Matrix",
+            "",
+            "| scenario | status | B&H | Calendar | Threshold | 1/N | LIBRA | LIBRA-only evidence |",
+            "|---|---:|---|---|---|---|---|---|",
+        ]
+    )
+    for row in rows:
+        baselines = row["computed_baselines"]
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(row["scenario_id"]),
+                    row_status(row),
+                    baselines.get("buy_hold", ""),
+                    baselines.get("calendar_monthly", ""),
+                    baselines.get("threshold_5pct", ""),
+                    baselines.get("equal_weight_calendar", ""),
+                    row["libra_decision"] or "(not run)",
+                    ", ".join(row["libra_only_output"]),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(["", "## Case Study 후보", ""])
+    for row in rows:
+        note = row["summary"] or row["error"] or row.get("expected_purpose") or row.get("description") or ""
+        lines.append(f"- {row['scenario_id']} `{row_status(row)}`: {short_text(note, limit=260)}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def run(args: argparse.Namespace) -> Path:
@@ -550,8 +727,10 @@ def run(args: argparse.Namespace) -> Path:
     write_call_heatmap_csv(out_dir / "call_heatmap.csv", rows)
     write_agent_frequency_csv(out_dir / "agent_frequency.csv", rows)
     write_call_heatmap_svg(out_dir / "call_heatmap.svg", rows)
+    write_slide_heatmap_svg(out_dir / "call_heatmap_slide.svg", rows)
     write_summary_md(out_dir / "summary.md", rows)
     write_case_studies_md(out_dir / "case_studies.md", rows)
+    write_presentation_report_md(out_dir / "presentation_report.md", rows)
     return out_dir
 
 

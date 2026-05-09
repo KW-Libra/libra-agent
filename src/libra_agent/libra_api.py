@@ -103,6 +103,25 @@ def _as_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _safe_exception_detail(exc: BaseException) -> str:
+    """Return a short exception chain for local diagnostics without leaking keys."""
+    secrets = [
+        os.getenv("GEMINI_API_KEY", ""),
+        os.getenv("GOOGLE_API_KEY", ""),
+        os.getenv("ANTHROPIC_API_KEY", ""),
+    ]
+    parts: list[str] = []
+    current: BaseException | None = exc
+    while current is not None and len(parts) < 4:
+        text = f"{type(current).__name__}: {current}"
+        for secret in secrets:
+            if secret:
+                text = text.replace(secret, "<redacted>")
+        parts.append(text)
+        current = current.__cause__
+    return " <- ".join(parts)
+
+
 def _existing_path(value: Any, *, field_name: str) -> str | None:
     if value is None or value == "":
         return None
@@ -366,7 +385,7 @@ def create_judge_run(payload: dict[str, Any]) -> dict[str, Any]:
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=_safe_exception_detail(exc)) from exc
 
     return _record_result(result, state_dir=state_dir)
 
