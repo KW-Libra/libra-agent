@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import asyncio
 import subprocess
 import tempfile
 import unittest
@@ -11,11 +12,12 @@ from unittest.mock import patch
 os.environ.setdefault("LIBRA_DOMAIN_AGENTS_ENABLED", "true")
 
 from libra_agent.errors import ChatClientError
+from libra_agent.domain_agents._adapter import _run_async
 from libra_agent.libra.constraints import validate_rebalance_plan
 from libra_agent.libra.direct_indexing import PortfolioDefinition
 from libra_agent.libra.evaluation import evaluate_decision_outcome
 from libra_agent.libra.signals import infer_signal_profile
-from libra_agent.libra_runtime import JudgeOrchestrator, LLMAgent, LocalKnowledgeBase
+from libra_agent.libra_runtime import CoreChatDomainRouter, JudgeOrchestrator, LLMAgent, LocalKnowledgeBase
 from libra_agent.libra_models import AgentResponse, AgentVerdict, PortfolioSnapshot, Urgency
 
 class FakeChatClient:
@@ -32,6 +34,18 @@ class FailingChatClient:
 
     def chat_json(self, **_: object) -> dict[str, object]:
         raise ChatClientError("offline")
+
+    def ensure_available(self) -> None:
+        return None
+
+
+class DomainAdapterChatClient:
+    model = "domain-adapter-test"
+
+    def chat_json(self, **kwargs: object) -> dict[str, object]:
+        user_prompt = str(kwargs.get("user_prompt") or "")
+        self.last_user_prompt = user_prompt
+        return {"rationale": "도메인 라우터 어댑터 응답"}
 
     def ensure_available(self) -> None:
         return None
@@ -418,6 +432,23 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
         self.assertEqual(action["agent_id"], "risk")
         self.assertEqual(action["layer"], "domain")
 
+    def test_core_chat_domain_router_uses_active_chat_client(self) -> None:
+        router = CoreChatDomainRouter(DomainAdapterChatClient())
+
+        answer = router.ask(agent_id="risk", system="리스크를 검토해줘.", user="포트폴리오")
+
+        self.assertEqual(answer, "도메인 라우터 어댑터 응답")
+        self.assertEqual(router.model_name_for("risk"), "domain-adapter-test")
+
+    def test_run_async_handles_existing_event_loop_without_reusing_coroutine(self) -> None:
+        async def inner() -> int:
+            async def coro() -> int:
+                return 7
+
+            return _run_async(coro())
+
+        self.assertEqual(asyncio.run(inner()), 7)
+
     def test_judge_routing_repairs_invalid_trade_review_without_plan(self) -> None:
         client = RepairingRoutingChatClient()
         orchestrator = JudgeOrchestrator(client=client)
@@ -436,6 +467,25 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
         self.assertEqual(action["action"], "CALL_AGENT")
         self.assertEqual(action["agent_id"], "news")
         self.assertEqual(client.calls, 2)
+
+    def test_judge_routing_stages_large_candidate_plan_for_trade_review(self) -> None:
+        orchestrator = JudgeOrchestrator(client=FakeChatClient(_call("profit")))
+
+        action = orchestrator._judge_next_action(
+            query="목표비중 이탈 초안의 수익성을 먼저 검토해줘",
+            portfolio=_portfolio(),
+            responses=[],
+            called_agents=[],
+            depth="medium",
+            trigger="pull",
+            trigger_event=None,
+            candidate_plan={"005930": -0.15, "000660": 0.15},
+        )
+
+        self.assertEqual(action["action"], "CALL_AGENT")
+        self.assertEqual(action["agent_id"], "profit")
+        self.assertLessEqual(sum(abs(delta) for delta in action["candidate_rebalance_plan"].values()), 0.2)
+        self.assertEqual(action["candidate_rebalance_plan"], {"005930": -0.1, "000660": 0.1})
 
     def test_direct_indexing_definition_creates_plan_and_trade_reviews(self) -> None:
         orchestrator = JudgeOrchestrator(

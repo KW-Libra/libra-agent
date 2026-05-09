@@ -11,6 +11,8 @@ JUDGE_ACTION_RULES = [
     "CALL_AGENT profit or cost is invalid when candidate_rebalance_plan is empty.",
     "Use Profit and Cost only when candidate_rebalance_plan contains concrete nonzero ticker weight deltas or the user asked an execution question.",
     "When information is sufficient or more calls are not justified, choose FINALIZE.",
+    "If the next useful view is Risk, Tax, Compliance, Macro, Sentiment, Execution, or ESG, choose FINALIZE; those domain agents are routed only after the core layer finishes.",
+    "For user-policy, ESG, tax, execution, or risk-only questions with no missing first-layer facts, choose FINALIZE so the domain council can review.",
     "On calm pull checks, Disclosure plus shallow News can already be enough.",
     "Do not call Report on pull unless there is conflict, a meaningful directional signal, or an explicit report request.",
     "Do not call Report just because the local cache is empty or an agent returned DIRECT_ANSWER_UNAVAILABLE.",

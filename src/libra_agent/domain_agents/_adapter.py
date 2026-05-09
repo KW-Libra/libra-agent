@@ -211,8 +211,10 @@ def domain_verdict_to_agent_response(
 def _run_async(coro: Any) -> Any:
     """Sync 컨텍스트에서 async 코루틴을 실행. 이미 loop 안이면 별 thread 사용."""
     try:
-        return asyncio.run(coro)
+        asyncio.get_running_loop()
     except RuntimeError:
+        return asyncio.run(coro)
+    else:
         result: list[Any] = []
         error: list[BaseException] = []
 

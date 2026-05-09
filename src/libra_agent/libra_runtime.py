@@ -22,7 +22,7 @@ from .libra.prompts import (
     default_agent_query,
     get_information_prompt_profile,
 )
-from .libra.constraints import validate_rebalance_plan
+from .libra.constraints import default_constraints_for, validate_rebalance_plan
 from .libra.direct_indexing import PortfolioDefinition, compact_drift_context
 from .libra.llm_clients.base import ChatClientError, ChatClientProtocol
 from .libra_validation import (
@@ -877,18 +877,70 @@ class LLMAgent:
                 user_prompt=user_prompt,
                 temperature=0.0,
             )
-            response = sanitize_agent_response_payload(
+            response = self._normalize_llm_response(
                 raw_response,
-                agent_id=self.agent_id,
-                portfolio=portfolio,
                 query=query,
                 turn_number=turn_number,
+                portfolio=portfolio,
+                knowledge_slice=knowledge_slice,
                 opinion_id=opinion_id,
                 depth=depth,
             )
         except (ChatClientError, ValueError, TypeError) as exc:
             raise ChatClientError(f"{self.agent_id} agent LLM failed; local deterministic response fallback is disabled.") from exc
 
+        if self._is_low_signal_response(response):
+            try:
+                repaired_raw_response = self._repair_agent_response(
+                    raw_response,
+                    original_user_prompt=user_prompt,
+                )
+                response = self._normalize_llm_response(
+                    repaired_raw_response,
+                    query=query,
+                    turn_number=turn_number,
+                    portfolio=portfolio,
+                    knowledge_slice=knowledge_slice,
+                    opinion_id=opinion_id,
+                    depth=depth,
+                )
+            except (ChatClientError, ValueError, TypeError) as exc:
+                raise ChatClientError(
+                    f"{self.agent_id} agent LLM repair failed; local deterministic response fallback is disabled."
+                ) from exc
+        if self._is_low_signal_response(response):
+            raise ChatClientError(f"{self.agent_id} agent LLM returned a sparse or untrustworthy response.")
+        response = sanitize_agent_response_payload(
+            response.to_dict(),
+            agent_id=self.agent_id,
+            portfolio=portfolio,
+            query=query,
+            turn_number=turn_number,
+            opinion_id=opinion_id,
+            depth=depth,
+        )
+        return response
+
+    def _normalize_llm_response(
+        self,
+        raw_response: Mapping[str, Any],
+        *,
+        query: str,
+        turn_number: int,
+        portfolio: PortfolioSnapshot,
+        knowledge_slice: KnowledgeSlice,
+        opinion_id: str,
+        depth: str,
+    ) -> AgentResponse:
+        response = sanitize_agent_response_payload(
+            raw_response,
+            agent_id=self.agent_id,
+            portfolio=portfolio,
+            query=query,
+            turn_number=turn_number,
+            opinion_id=opinion_id,
+            depth=depth,
+        )
         response.agent_id = self.agent_id
         response.opinion_id = response.opinion_id or opinion_id
         response.turn_number = turn_number
@@ -917,18 +969,36 @@ class LLMAgent:
             for document in knowledge_slice.documents:
                 focus_tickers.update(document.matched_holdings)
             response.focus_tickers = sorted(focus_tickers)
-        if self._is_low_signal_response(response):
-            raise ChatClientError(f"{self.agent_id} agent LLM returned a sparse or untrustworthy response.")
-        response = sanitize_agent_response_payload(
-            response.to_dict(),
-            agent_id=self.agent_id,
-            portfolio=portfolio,
-            query=query,
-            turn_number=turn_number,
-            opinion_id=opinion_id,
-            depth=depth,
-        )
         return response
+
+    def _repair_agent_response(
+        self,
+        invalid_payload: Mapping[str, Any],
+        *,
+        original_user_prompt: str,
+    ) -> dict[str, Any]:
+        repair_payload = {
+            "invalid_response": dict(invalid_payload),
+            "validator_error": (
+                "The previous agent response was rejected because it did not contain enough "
+                "usable reasoning, confidence, or signal for Judge to trust it."
+            ),
+            "repair_rules": [
+                "Return only one JSON object with the exact normal agent response keys.",
+                "Do not invent external data; use only the original supplied observations.",
+                "Always fill reasoning_for_judge_agent with one or two Korean sentences.",
+                "If the observations are outside this agent's scope, say so explicitly and keep direction and strength at 0.",
+                "If at least one supplied observation was considered, confidence must be at least 0.2; describe uncertainty in limits_acknowledged.",
+                "If there is truly no usable observation, return QUIET or DIRECT_ANSWER_UNAVAILABLE with a clear Korean reason.",
+            ],
+            "original_task": original_user_prompt,
+        }
+        return self.client.chat_json(
+            system_prompt=self._system_prompt()
+            + " The previous JSON failed validation. Repair it without changing the supplied evidence.",
+            user_prompt=json.dumps(repair_payload, ensure_ascii=False, separators=(",", ":")),
+            temperature=0.0,
+        )
 
     def _run_tool_loop(
         self,
@@ -1237,6 +1307,51 @@ class LLMAgent:
         }
 
 
+class CoreChatDomainRouter:
+    """Expose the active Judge ChatClient through the domain-agent router API."""
+
+    def __init__(self, client: ChatClient) -> None:
+        self.client = client
+
+    def ask(
+        self,
+        *,
+        agent_id: str,
+        system: str,
+        user: str,
+        max_tokens: int = 1024,
+        cross_validate: bool = False,
+    ) -> str:
+        del max_tokens, cross_validate
+        payload = {
+            "agent_id": agent_id,
+            "domain_system_prompt": system,
+            "domain_user_prompt": user,
+            "instructions": (
+                "Execute the domain agent task. Return JSON with exactly one key, "
+                "rationale, containing the answer text."
+            ),
+        }
+        response = self.client.chat_json(
+            system_prompt=(
+                "You are a LIBRA domain-agent LLM adapter. "
+                "Follow domain_system_prompt and domain_user_prompt, but return only "
+                "one JSON object: {\"rationale\":\"...\"}. "
+                "Write rationale in Korean unless the domain prompt explicitly asks otherwise."
+            ),
+            user_prompt=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            temperature=0.0,
+        )
+        rationale = response.get("rationale") or response.get("answer") or response.get("summary")
+        if isinstance(rationale, str) and rationale.strip():
+            return rationale.strip()
+        return json.dumps(response, ensure_ascii=False)
+
+    def model_name_for(self, agent_id: str) -> str:
+        del agent_id
+        return str(getattr(self.client, "model", "active-chat-client"))
+
+
 class JudgeOrchestrator:
     def __init__(self, *, client: ChatClient, checkpoint_path: str | Path | None = None) -> None:
         self.client = client
@@ -1250,7 +1365,7 @@ class JudgeOrchestrator:
         self.cost_agent = agent_bundle.cost
         self.evaluation_agent = agent_bundle.evaluation
         self.domain_agents = agent_bundle.domain_agents()
-        self.domain_router = None
+        self.domain_router = CoreChatDomainRouter(client)
         self.checkpoint_path = Path(checkpoint_path).expanduser() if checkpoint_path else None
         from .libra_graph import LibraLangGraphRuntime
         self._graph_runtime = LibraLangGraphRuntime(self)
@@ -1479,6 +1594,7 @@ class JudgeOrchestrator:
             trigger_event=trigger_event,
             candidate_plan=candidate_plan,
         )
+        initial_raw = dict(raw)
         if normalized is None:
             raw = self._repair_judge_action(raw, context_payload=payload)
             normalized = self._normalize_judge_action(
@@ -1493,7 +1609,13 @@ class JudgeOrchestrator:
                 candidate_plan=candidate_plan,
             )
         if normalized is None:
-            raise ChatClientError("Judge routing LLM returned an invalid or unsafe next action.")
+            detail = self._judge_action_rejection_detail(
+                raw,
+                initial_payload=initial_raw,
+                called_agents=called_agents,
+                candidate_plan=candidate_plan,
+            )
+            raise ChatClientError(f"Judge routing LLM returned an invalid or unsafe next action. {detail}")
         return normalized
 
     def _repair_judge_action(
@@ -1530,6 +1652,7 @@ class JudgeOrchestrator:
                 "Do not call an already-called agent.",
                 "CALL_AGENT profit or cost is invalid if candidate_rebalance_plan is empty.",
                 "If you want profit or cost, include a concrete nonempty candidate_rebalance_plan with portfolio tickers and nonzero weight deltas.",
+                "If you wanted a domain agent such as risk, tax, compliance, macro, sentiment, execution, or esg, choose FINALIZE so the separate domain council layer can route it.",
                 "If the desired agent is already called or no valid trade-review action exists, choose FINALIZE.",
             ],
             "state": context_payload,
@@ -1543,6 +1666,39 @@ class JudgeOrchestrator:
             )
         except ChatClientError as exc:
             raise ChatClientError("Judge routing LLM repair failed; deterministic routing fallback is disabled.") from exc
+
+    def _judge_action_rejection_detail(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        initial_payload: Mapping[str, Any],
+        called_agents: list[str],
+        candidate_plan: Mapping[str, float] | None,
+    ) -> str:
+        already_called = [canonical_agent_id(item) for item in called_agents]
+        valid_next_agents = [
+            agent_id
+            for agent_id in self._routing_agent_ids()
+            if agent_id not in set(already_called)
+        ]
+
+        def _compact(raw: Mapping[str, Any]) -> dict[str, Any]:
+            raw_plan = raw.get("candidate_rebalance_plan")
+            return {
+                "action": truncate(str(raw.get("action", "")), 80),
+                "agent_id": truncate(str(raw.get("agent_id", "")), 80),
+                "normalized_agent_id": canonical_agent_id(str(raw.get("agent_id", ""))),
+                "candidate_plan_keys": list(raw_plan.keys())[:8] if isinstance(raw_plan, Mapping) else [],
+            }
+
+        detail = {
+            "initial": _compact(initial_payload),
+            "repaired": _compact(payload),
+            "already_called": already_called,
+            "valid_next_agents": valid_next_agents,
+            "candidate_plan_keys": list((candidate_plan or {}).keys())[:8],
+        }
+        return "detail=" + json.dumps(detail, ensure_ascii=False, separators=(",", ":"))
 
     def _domain_next_action(
         self,
@@ -2392,6 +2548,21 @@ class JudgeOrchestrator:
             sanitized[allowed[normalized]] = round(delta, 4)
         constraint_check = validate_rebalance_plan(portfolio=portfolio, plan=sanitized)
         if not constraint_check.passed:
+            constraint_set = default_constraints_for(portfolio)
+            total_trade = sum(abs(delta) for delta in constraint_check.adjusted_plan.values())
+            if (
+                constraint_check.reason.startswith("Total daily trade weight")
+                and total_trade > constraint_set.max_trade_per_day
+            ):
+                scale = constraint_set.max_trade_per_day / total_trade
+                staged_plan = {
+                    ticker: round(delta * scale, 4)
+                    for ticker, delta in constraint_check.adjusted_plan.items()
+                    if abs(delta * scale) >= 0.005
+                }
+                staged_check = validate_rebalance_plan(portfolio=portfolio, plan=staged_plan)
+                if staged_check.passed:
+                    return staged_check.adjusted_plan
             return {}
         return constraint_check.adjusted_plan
 
