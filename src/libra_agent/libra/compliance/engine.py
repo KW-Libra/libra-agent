@@ -52,6 +52,7 @@ def default_compliance_engine() -> ComplianceEngine:
             "IPS_VOLATILITY_LIMIT": check_ips_volatility_limit,
             "IPS_ASSET_CLASS_BAND": check_ips_asset_class_band,
             "ESG_USER_EXCLUSION": check_esg_user_exclusion,
+            "ESG_MIN_SCORE": check_esg_min_score,
             "TAX_ANNUAL_GAIN_LIMIT": check_tax_annual_gain_limit,
             "KYC_RISK_PROFILE_MISMATCH": check_kyc_risk_profile_mismatch,
             "LIQUIDITY_MIN_CASH": check_liquidity_min_cash,
@@ -82,6 +83,15 @@ def build_compliance_context_from_portfolio(
                 holding.ticker: str(getattr(holding, "sector", "") or "")
                 for holding in portfolio.holdings
                 if str(getattr(holding, "sector", "") or "").strip()
+            },
+        )
+    if not snapshot.esg_score:
+        snapshot = replace(
+            snapshot,
+            esg_score={
+                holding.ticker: float(holding.esg_score)
+                for holding in portfolio.holdings
+                if holding.esg_score is not None
             },
         )
     user_ips = ips or IPSConfig()
@@ -170,6 +180,29 @@ def check_esg_user_exclusion(ctx: ComplianceContext) -> list[ComplianceViolation
             violations.append(_blocking("ESG_USER_EXCLUSION", f"{ticker}가 사용자 제외 종목에 포함", [ticker]))
         if sector and sector in excluded_sectors:
             violations.append(_blocking("ESG_USER_EXCLUSION", f"{ticker}가 제외 섹터 {sector}에 매칭", [ticker]))
+    return violations
+
+
+def check_esg_min_score(ctx: ComplianceContext) -> list[ComplianceViolation]:
+    min_score = getattr(ctx.user_ips, "esg_min_score", None)
+    if min_score is None:
+        return []
+    threshold = float(min_score)
+    violations: list[ComplianceViolation] = []
+    for ticker, weight in _target_portfolio(ctx).items():
+        if ticker == "CASH" or float(weight) <= 0:
+            continue
+        score = ctx.market_data.esg_score.get(ticker)
+        if score is None:
+            continue
+        if float(score) < threshold:
+            violations.append(
+                _blocking(
+                    "ESG_MIN_SCORE",
+                    f"{ticker} ESG 점수 {float(score):.1f}가 사용자 최소 기준 {threshold:.1f} 미만",
+                    [ticker],
+                )
+            )
     return violations
 
 

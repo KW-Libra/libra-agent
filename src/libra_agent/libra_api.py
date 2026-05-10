@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from contextlib import ExitStack
 import os
 from pathlib import Path
@@ -9,9 +10,11 @@ from typing import Any, Mapping
 from fastapi import FastAPI, HTTPException
 
 from .libra.agents.evaluation_agent import EvaluationAgent
+from .libra.committee import CommitteeRuntime
+from .libra.schemas import IPSConfig, KYCProfile, MarketSnapshot
 from .libra.direct_indexing import PortfolioDefinition
 from .libra.llm_clients import open_chat_client_from_env
-from .libra_models import PortfolioSnapshot, TriggerEvent
+from .libra_models import AgentResponse, PortfolioSnapshot, TriggerEvent
 from .libra_runtime import JudgeOrchestrator, LocalKnowledgeBase
 from .libra_store import LibraDecisionStore
 
@@ -215,6 +218,134 @@ def _as_plain_float_map(value: Any) -> dict[str, float]:
     return result
 
 
+def _literal_value(value: str) -> Any:
+    text = value.strip()
+    if not text:
+        return None
+    if text.lower() in {"none", "null"}:
+        return None
+    try:
+        return ast.literal_eval(text)
+    except (SyntaxError, ValueError):
+        return text
+
+
+def _structured_preferences(portfolio: PortfolioSnapshot) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for item in portfolio.user_preferences:
+        if "=" not in item:
+            continue
+        key, raw_value = item.split("=", 1)
+        key = key.strip()
+        if key:
+            result[key] = _literal_value(raw_value)
+    return result
+
+
+def _percent_from_preference(value: Any, *, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if 0.0 <= number <= 1.0:
+        return number * 100.0
+    return number
+
+
+def _ips_from_payload(portfolio: PortfolioSnapshot, payload: Mapping[str, Any]) -> IPSConfig:
+    preferences = _structured_preferences(portfolio)
+    raw_governance = _optional_mapping(payload.get("governance_v1"), field_name="governance_v1") or {}
+    raw_ips = _optional_mapping(raw_governance.get("ips"), field_name="governance_v1.ips") or {}
+    excluded_sectors = raw_ips.get("excluded_sectors", preferences.get("excluded_sectors", [])) or []
+    excluded_tickers = raw_ips.get("excluded_tickers", preferences.get("excluded_tickers", [])) or []
+    if isinstance(excluded_sectors, str):
+        excluded_sectors = [excluded_sectors]
+    if isinstance(excluded_tickers, str):
+        excluded_tickers = [excluded_tickers]
+
+    sector_limit = raw_ips.get("sector_limit_pct")
+    if sector_limit is None:
+        max_sector_weight = preferences.get("max_sector_weight")
+        if isinstance(max_sector_weight, Mapping) and max_sector_weight:
+            sector_limit = max(float(value) for value in max_sector_weight.values()) * 100.0
+
+    return IPSConfig(
+        single_ticker_limit_pct=_percent_from_preference(
+            raw_ips.get("single_ticker_limit_pct", preferences.get("max_single_weight")),
+            default=25.0,
+        ),
+        sector_limit_pct=_percent_from_preference(sector_limit, default=40.0),
+        annual_volatility_limit=_percent_from_preference(raw_ips.get("annual_volatility_limit"), default=20.0) / 100.0,
+        asset_class_target=dict(raw_ips.get("asset_class_target") or {"EQUITY": 60.0, "BOND": 35.0, "ALT": 5.0}),
+        asset_class_band_pct=_percent_from_preference(raw_ips.get("asset_class_band_pct"), default=10.0),
+        min_cash_pct=_percent_from_preference(raw_ips.get("min_cash_pct", preferences.get("cash_min_weight")), default=5.0),
+        max_market_impact_pct_of_adv=_percent_from_preference(raw_ips.get("max_market_impact_pct_of_adv"), default=5.0),
+        excluded_tickers=[str(item).upper() for item in excluded_tickers],
+        excluded_sectors=[str(item).upper() for item in excluded_sectors],
+        esg_min_score=(
+            float(raw_ips.get("esg_min_score", preferences.get("esg_min_score")))
+            if raw_ips.get("esg_min_score", preferences.get("esg_min_score")) is not None
+            else None
+        ),
+    )
+
+
+def _kyc_from_payload(payload: Mapping[str, Any]) -> KYCProfile:
+    raw_governance = _optional_mapping(payload.get("governance_v1"), field_name="governance_v1") or {}
+    raw_kyc = _optional_mapping(raw_governance.get("kyc"), field_name="governance_v1.kyc") or {}
+    risk = str(raw_kyc.get("risk_tolerance") or "MODERATE").strip().upper()
+    if risk not in {"CONSERVATIVE", "MODERATE", "AGGRESSIVE"}:
+        risk = "MODERATE"
+    return KYCProfile(
+        risk_tolerance=risk,  # type: ignore[arg-type]
+        investment_horizon_years=int(raw_kyc.get("investment_horizon_years") or 15),
+        max_drawdown_tolerance_pct=float(raw_kyc.get("max_drawdown_tolerance_pct") or 15.0),
+    )
+
+
+def _market_snapshot_from_portfolio(portfolio: PortfolioSnapshot) -> MarketSnapshot:
+    return MarketSnapshot(
+        prices={
+            holding.ticker: float(holding.last_price)
+            for holding in portfolio.holdings
+            if holding.last_price is not None
+        },
+        sector_map={
+            holding.ticker: str(holding.sector)
+            for holding in portfolio.holdings
+            if holding.sector
+        },
+        esg_score={
+            holding.ticker: float(holding.esg_score)
+            for holding in portfolio.holdings
+            if holding.esg_score is not None
+        },
+    )
+
+
+def _attach_governance_v1(result: dict[str, Any], *, payload: Mapping[str, Any], portfolio: PortfolioSnapshot) -> dict[str, Any]:
+    raw_governance = _optional_mapping(payload.get("governance_v1"), field_name="governance_v1") or {}
+    if raw_governance.get("enabled") is False:
+        return result
+    response_payloads = result.get("agent_responses")
+    if not isinstance(response_payloads, list):
+        return result
+    responses = [
+        AgentResponse.from_dict(item)
+        for item in response_payloads
+        if isinstance(item, Mapping)
+    ]
+    governance_result = CommitteeRuntime().run_from_agent_responses(
+        portfolio=portfolio,
+        responses=responses,
+        ips=_ips_from_payload(portfolio, payload),
+        kyc=_kyc_from_payload(payload),
+        market_data=_market_snapshot_from_portfolio(portfolio),
+    )
+    result["governance_v1"] = governance_result.to_dict()
+    return result
+
+
 def _portfolio_with_definition_targets(
     portfolio: PortfolioSnapshot,
     definition: PortfolioDefinition | None,
@@ -382,6 +513,7 @@ def create_judge_run(payload: dict[str, Any]) -> dict[str, Any]:
                 thread_id=str(payload.get("thread_id")) if payload.get("thread_id") else None,
                 enable_human_interrupts=_as_bool(payload.get("enable_human_interrupts", False)),
             )
+            result = _attach_governance_v1(result, payload=payload, portfolio=portfolio)
     except HTTPException:
         raise
     except Exception as exc:

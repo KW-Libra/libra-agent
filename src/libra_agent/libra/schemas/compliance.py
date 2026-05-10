@@ -46,6 +46,7 @@ class MarketSnapshot:
     avg_daily_volume: dict[str, float] = field(default_factory=dict)
     krx_status: dict[str, str] = field(default_factory=dict)
     sector_map: dict[str, str] = field(default_factory=dict)
+    esg_score: dict[str, float] = field(default_factory=dict)
     volatility: dict[str, float] = field(default_factory=dict)
 
 

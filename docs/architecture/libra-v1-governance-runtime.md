@@ -24,7 +24,10 @@
 | `src/libra_agent/libra/judge/final.py` | 4분기 final decision branch와 tentative trade 산정 |
 | `src/libra_agent/libra/committee.py` | 기존 AgentResponse를 v1 governance runtime으로 연결하는 어댑터 |
 | `src/libra_agent/libra/personas/v1.py` | PERSONA_V1 IPS/KYC fixture |
+| `src/libra_agent/libra_api.py` | 기존 Judge API 응답에 `governance_v1` 결과 부착 |
+| `scripts/run_benchmark.py` | v1 decision/branch/compliance를 decision matrix와 발표 보고서에 출력 |
 | `tests/test_libra_v1_governance.py` | v1 governance 핵심 경로 테스트 |
+| `tests/test_libra_agent_api.py` | Judge API v1 attachment 테스트 |
 
 ## 현재 구현 범위
 
@@ -36,6 +39,7 @@
 - `IPS_SINGLE_TICKER_LIMIT` hard BLOCKING
 - `IPS_SECTOR_LIMIT` hard BLOCKING
 - `ESG_USER_EXCLUSION` hard BLOCKING
+- `ESG_MIN_SCORE` hard BLOCKING
 - `LIQUIDITY_MIN_CASH`, `IPS_VOLATILITY_LIMIT` WARNING
 - `AgentResponse -> AgentOpinion` adapter
 - legacy `ComplianceAgent`를 v1 opinion set에서 제외
@@ -43,6 +47,9 @@
 - conflict target selection
 - deterministic final branch
 - `COMPLIANCE_VETO -> USER_DECISION_REQUIRED + 3 options`
+- 기존 `/judge` API 응답에 `governance_v1` 부착
+- scenario benchmark `decision_matrix.csv`와 `presentation_report.md`에 v1 branch/compliance 표시
+- 09 ESG 충돌 시나리오에서 `ESG_MIN_SCORE -> COMPLIANCE_VETO` 실제 API 확인
 
 ### 아직 남음
 
@@ -50,7 +57,7 @@
 - Mediator Judge LLM prompt/tool-use 연결
 - Round 2 targeted recall prompt 연결
 - Final Judge LLM prompt/tool-use 연결
-- 기존 `/v1/judge-runs` API를 v1 runtime으로 전환
+- 기존 Judge API의 주 decision source를 v1 runtime으로 완전 전환
 - scenario backtest와 4차원 metric wiring
 - Tax lot 기반 `TAX_ANNUAL_GAIN_LIMIT`
 - ADV/호가 기반 `MARKET_IMPACT_LIMIT`
@@ -75,3 +82,23 @@ D:\Libra\.venv\Scripts\python.exe -m unittest tests.test_libra_v1_governance -v
 ```
 
 현재 5개 v1 governance 테스트가 통과한다.
+
+API attachment와 benchmark reporting까지 포함한 smoke set:
+
+```powershell
+D:\Libra\.venv\Scripts\python.exe -m unittest tests.test_libra_v1_governance tests.test_libra_agent_api tests.test_benchmark_scenarios -v
+```
+
+현재 18개 테스트가 통과한다.
+
+실제 API 벤치마크 확인:
+
+```powershell
+D:\Libra\.venv\Scripts\python.exe scripts\run_benchmark.py --scenario-id 09_esg_conflict --out-dir outputs\benchmark\live_anthropic_0510_v1_esg_veto_check --timeout-seconds 420
+```
+
+확인 결과 `decision_matrix.csv`에 다음 값이 기록된다.
+
+- `governance_v1_decision=USER_DECISION_REQUIRED`
+- `governance_v1_branch=COMPLIANCE_VETO`
+- `governance_v1_compliance=BLOCKING`

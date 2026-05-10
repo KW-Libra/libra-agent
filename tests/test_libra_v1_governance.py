@@ -7,7 +7,7 @@ from libra_agent.libra.compliance import build_compliance_context_from_portfolio
 from libra_agent.libra.judge.final import determine_branch, render_rule_based_final_decision
 from libra_agent.libra.mediator import classify_branch, compute_consensus, consensus_by_subject, select_targets
 from libra_agent.libra.personas import persona_v1_ips, persona_v1_kyc
-from libra_agent.libra.schemas import AgentOpinion, DecisionBranch, DecisionType, Direction, MarketSnapshot, Severity, Trade, Vote
+from libra_agent.libra.schemas import AgentOpinion, DecisionBranch, DecisionType, Direction, IPSConfig, MarketSnapshot, Severity, Trade, Vote
 from libra_agent.libra_models import AgentResponse, AgentVerdict, PortfolioSnapshot, Urgency
 
 
@@ -90,6 +90,19 @@ class LibraV1GovernanceTests(unittest.TestCase):
         self.assertEqual(branch, DecisionBranch.COMPLIANCE_VETO)
         self.assertEqual(rendered.trades, [])
         self.assertEqual(len(rendered.user_options or []), 3)
+
+    def test_compliance_engine_blocks_esg_min_score(self) -> None:
+        ctx = build_compliance_context_from_portfolio(
+            _portfolio(),
+            ips=IPSConfig(esg_min_score=70.0),
+            kyc=persona_v1_kyc(),
+            market_data=MarketSnapshot(esg_score={"069500": 58.0}),
+        )
+
+        check = default_compliance_engine().check(ctx, "AFTER")
+
+        self.assertFalse(check.can_proceed)
+        self.assertTrue(any(v.rule_id == "ESG_MIN_SCORE" for v in check.violations))
 
     def test_consensus_ignores_informational_votes_and_selects_conflict_targets(self) -> None:
         opinions = [

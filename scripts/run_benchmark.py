@@ -345,6 +345,9 @@ def summarize_libra_result(result: Mapping[str, Any] | None) -> dict[str, Any]:
     if not result:
         return {
             "libra_decision": "",
+            "governance_v1_decision": "",
+            "governance_v1_branch": "",
+            "governance_v1_compliance": "",
             "called_agents": [],
             "skipped_agents": [],
             "confidence": "",
@@ -352,9 +355,29 @@ def summarize_libra_result(result: Mapping[str, Any] | None) -> dict[str, Any]:
             "trace_turns": 0,
         }
     decision = result.get("decision") if isinstance(result.get("decision"), Mapping) else {}
+    governance = result.get("governance_v1") if isinstance(result.get("governance_v1"), Mapping) else {}
+    final_decision = governance.get("final_decision") if isinstance(governance.get("final_decision"), Mapping) else {}
+    compliance_after = (
+        governance.get("compliance_after")
+        if isinstance(governance.get("compliance_after"), Mapping)
+        else final_decision.get("compliance_check") if isinstance(final_decision.get("compliance_check"), Mapping) else {}
+    )
+    violations = compliance_after.get("violations", []) if isinstance(compliance_after, Mapping) else []
+    blocking_count = sum(
+        1
+        for item in violations
+        if isinstance(item, Mapping) and item.get("severity") == "BLOCKING"
+    ) if isinstance(violations, list) else 0
     trace = decision.get("decision_trace", []) if isinstance(decision, Mapping) else []
     return {
         "libra_decision": decision.get("decision", ""),
+        "governance_v1_decision": final_decision.get("decision", ""),
+        "governance_v1_branch": final_decision.get("branch", ""),
+        "governance_v1_compliance": (
+            "BLOCKING"
+            if blocking_count
+            else "PASS" if compliance_after else ""
+        ),
         "called_agents": list(decision.get("called_agents", []) or []),
         "skipped_agents": list(decision.get("skipped_agents", []) or []),
         "confidence": decision.get("confidence", ""),
@@ -384,6 +407,9 @@ def build_row(
         "computed_baselines": dict(computed_baselines),
         "declared_baselines": dict(scenario.get("baseline_decisions", {}) or {}),
         "libra_decision": summary["libra_decision"],
+        "governance_v1_decision": summary["governance_v1_decision"],
+        "governance_v1_branch": summary["governance_v1_branch"],
+        "governance_v1_compliance": summary["governance_v1_compliance"],
         "called_agents": summary["called_agents"],
         "skipped_agents": summary["skipped_agents"],
         "confidence": summary["confidence"],
@@ -420,7 +446,19 @@ def write_json(path: Path, payload: Any) -> None:
 def write_decision_matrix(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["scenario_id", "status", "title", *BASELINES, "LIBRA", "called_agents", "LIBRA_only_output", "note"])
+        writer.writerow([
+            "scenario_id",
+            "status",
+            "title",
+            *BASELINES,
+            "LIBRA",
+            "governance_v1_decision",
+            "governance_v1_branch",
+            "governance_v1_compliance",
+            "called_agents",
+            "LIBRA_only_output",
+            "note",
+        ])
         for row in rows:
             baselines = row["computed_baselines"]
             writer.writerow(
@@ -430,6 +468,9 @@ def write_decision_matrix(path: Path, rows: list[dict[str, Any]]) -> None:
                     row["title"],
                     *(baselines.get(name, "") for name in BASELINES),
                     row["libra_decision"] or "(not run)",
+                    row.get("governance_v1_decision") or "",
+                    row.get("governance_v1_branch") or "",
+                    row.get("governance_v1_compliance") or "",
                     " ".join(agents_for_row(row)),
                     "+".join(row["libra_only_output"]),
                     row["summary"] or row["error"],
@@ -653,8 +694,8 @@ def write_presentation_report_md(path: Path, rows: list[dict[str, Any]]) -> None
             "",
             "## Decision Matrix",
             "",
-            "| scenario | status | B&H | Calendar | Threshold | 1/N | LIBRA | LIBRA-only evidence |",
-            "|---|---:|---|---|---|---|---|---|",
+            "| scenario | status | B&H | Calendar | Threshold | 1/N | LIBRA | v1 decision | v1 branch | Compliance | LIBRA-only evidence |",
+            "|---|---:|---|---|---|---|---|---|---|---|---|",
         ]
     )
     for row in rows:
@@ -670,6 +711,9 @@ def write_presentation_report_md(path: Path, rows: list[dict[str, Any]]) -> None
                     baselines.get("threshold_5pct", ""),
                     baselines.get("equal_weight_calendar", ""),
                     row["libra_decision"] or "(not run)",
+                    str(row.get("governance_v1_decision") or ""),
+                    str(row.get("governance_v1_branch") or ""),
+                    str(row.get("governance_v1_compliance") or ""),
                     ", ".join(row["libra_only_output"]),
                 ]
             )

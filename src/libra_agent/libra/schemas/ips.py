@@ -15,6 +15,7 @@ class IPSConfig:
     max_market_impact_pct_of_adv: float = 5.0
     excluded_tickers: list[str] = field(default_factory=list)
     excluded_sectors: list[str] = field(default_factory=list)
+    esg_min_score: float | None = None
 
 
 @dataclass(slots=True)

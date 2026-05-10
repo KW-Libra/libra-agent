@@ -22,6 +22,7 @@ def persona_v1_ips() -> IPSConfig:
         max_market_impact_pct_of_adv=5.0,
         excluded_tickers=[],
         excluded_sectors=["TOBACCO", "WEAPONS"],
+        esg_min_score=60.0,
     )
 
 
