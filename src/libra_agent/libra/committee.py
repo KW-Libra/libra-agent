@@ -335,9 +335,13 @@ class CommitteeRuntime:
             },
         }
         try:
-            raw = client.chat_json(
+            raw = _chat_json_strict(
+                client,
                 system_prompt=_MEDIATOR_SYSTEM_PROMPT,
                 user_prompt=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                tool_name="submit_mediator_decision",
+                tool_description="Round 1 consensus를 검토하고 Round 2 표적 재호출 여부를 제출합니다.",
+                input_schema=_mediator_decision_schema(candidate_targets),
                 temperature=0.0,
             )
         except ChatClientError:
@@ -468,9 +472,13 @@ def _fill_final_decision_with_llm(
         },
     }
     try:
-        raw = client.chat_json(
+        raw = _chat_json_strict(
+            client,
             system_prompt=_FINAL_JUDGE_SYSTEM_PROMPT,
             user_prompt=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            tool_name="submit_final_judge_fill",
+            tool_description="코드가 잠근 최종 branch에 맞춰 사용자 설명과 선택지를 제출합니다.",
+            input_schema=_final_judge_fill_schema(),
             temperature=0.0,
         )
     except ChatClientError:
@@ -524,6 +532,90 @@ def _compact_opinion(opinion: AgentOpinion) -> dict[str, Any]:
         "reasoning": opinion.reasoning[:700],
         "metadata": dict(opinion.metadata),
         "delta_from_round1": opinion.delta_from_round1,
+    }
+
+
+def _chat_json_strict(
+    client: Any,
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    tool_name: str,
+    tool_description: str,
+    input_schema: dict[str, Any],
+    temperature: float,
+) -> dict[str, Any]:
+    if hasattr(client, "chat_json_tool"):
+        return client.chat_json_tool(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            tool_name=tool_name,
+            tool_description=tool_description,
+            input_schema=input_schema,
+            temperature=temperature,
+        )
+    return client.chat_json(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        temperature=temperature,
+    )
+
+
+def _mediator_decision_schema(candidate_targets: list[str]) -> dict[str, Any]:
+    target_values = [_display_agent_name(_agent_id_from_display(item)) for item in candidate_targets]
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "targets_to_recall": {
+                "type": "array",
+                "items": {"type": "string", "enum": target_values or [""]},
+                "maxItems": 4,
+            },
+            "skip_round_2": {"type": "boolean"},
+            "rationale": {"type": "string", "minLength": 1},
+        },
+        "required": ["targets_to_recall", "skip_round_2", "rationale"],
+    }
+
+
+def _final_judge_fill_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "reasoning": {"type": "string", "minLength": 1},
+            "user_question": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "null"},
+                ]
+            },
+            "user_options": {
+                "anyOf": [
+                    {"type": "null"},
+                    {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "label": {"type": "string", "minLength": 1},
+                                "supporting_agents": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "expected_effect": {"type": "string", "minLength": 1},
+                            },
+                            "required": ["label", "supporting_agents", "expected_effect"],
+                        },
+                    },
+                ]
+            },
+        },
+        "required": ["reasoning", "user_question", "user_options"],
     }
 
 

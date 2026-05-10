@@ -63,6 +63,45 @@ class AnthropicChatClient:
             raise AnthropicClientError("Anthropic returned an empty response body.")
         return self._decode_json(text)
 
+    def chat_json_tool(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        tool_name: str,
+        tool_description: str,
+        input_schema: Mapping[str, Any],
+        temperature: float = 0.1,
+    ) -> dict[str, Any]:
+        self._validate_api_key()
+        if not tool_name.strip():
+            raise AnthropicClientError("tool_name is required for Anthropic tool JSON calls.")
+        payload = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": temperature,
+            "system": system_prompt,
+            "messages": [
+                {"role": "user", "content": user_prompt},
+            ],
+            "tools": [
+                {
+                    "name": tool_name,
+                    "description": tool_description,
+                    "input_schema": dict(input_schema),
+                }
+            ],
+            "tool_choice": {"type": "tool", "name": tool_name},
+        }
+        try:
+            with self._http_client() as client:
+                response = client.post(f"{self.base_url}/v1/messages", json=payload, headers=self._headers())
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise AnthropicClientError(f"Failed to call Anthropic Messages API: {exc}") from exc
+
+        return self._extract_tool_input(response.json().get("content"), tool_name=tool_name)
+
     def ensure_available(self) -> None:
         self._validate_api_key()
         try:
@@ -103,6 +142,22 @@ class AnthropicChatClient:
             elif isinstance(item.get("text"), str):
                 text_parts.append(str(item["text"]))
         return "".join(text_parts)
+
+    def _extract_tool_input(self, content: Any, *, tool_name: str) -> dict[str, Any]:
+        if not isinstance(content, list):
+            raise AnthropicClientError("Anthropic tool response did not contain content blocks.")
+        for item in content:
+            if not isinstance(item, Mapping):
+                continue
+            if item.get("type") != "tool_use" or item.get("name") != tool_name:
+                continue
+            tool_input = item.get("input")
+            if isinstance(tool_input, Mapping):
+                return dict(tool_input)
+            if isinstance(tool_input, str):
+                return self._decode_json(tool_input)
+            raise AnthropicClientError("Anthropic tool_use input was not an object.")
+        raise AnthropicClientError(f"Anthropic response did not contain expected tool_use block: {tool_name}.")
 
     def _decode_json(self, raw_text: str) -> dict[str, Any]:
         try:

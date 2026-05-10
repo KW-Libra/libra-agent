@@ -57,6 +57,51 @@ class AnthropicChatClientTests(unittest.TestCase):
 
         client.ensure_available()
 
+    def test_chat_json_tool_forces_tool_choice_and_returns_tool_input(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            body = json.loads(request.content.decode("utf-8"))
+            self.assertEqual(body["tool_choice"], {"type": "tool", "name": "submit_result"})
+            self.assertEqual(body["tools"][0]["name"], "submit_result")
+            self.assertEqual(body["tools"][0]["input_schema"]["required"], ["decision"])
+            return httpx.Response(
+                200,
+                json={
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "submit_result",
+                            "id": "toolu_test",
+                            "input": {"decision": "HOLD"},
+                        }
+                    ]
+                },
+            )
+
+        client = AnthropicChatClient(
+            api_key="test-key",
+            model="claude-test",
+            transport=httpx.MockTransport(handler),
+        )
+
+        payload = client.chat_json_tool(
+            system_prompt="system",
+            user_prompt="user",
+            tool_name="submit_result",
+            tool_description="submit strict result",
+            input_schema={
+                "type": "object",
+                "properties": {"decision": {"type": "string"}},
+                "required": ["decision"],
+            },
+            temperature=0.0,
+        )
+
+        self.assertEqual(payload, {"decision": "HOLD"})
+        self.assertEqual(len(requests), 1)
+
     def test_missing_api_key_fails_before_http_call(self) -> None:
         client = AnthropicChatClient(api_key="", model="claude-test")
 
