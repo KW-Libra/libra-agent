@@ -50,14 +50,17 @@
 - 기존 `/judge` API 응답에 `governance_v1` 부착
 - scenario benchmark `decision_matrix.csv`와 `presentation_report.md`에 v1 branch/compliance 표시
 - 09 ESG 충돌 시나리오에서 `ESG_MIN_SCORE -> COMPLIANCE_VETO` 실제 API 확인
+- `governance_v1.execution_mode=primary`에서 v1 committee runtime을 주 실행 경로로 사용
+- Round 1 11개 위원회 에이전트 병렬 호출
+- Mediator Judge LLM으로 Round 2 표적 선정
+- Round 2 표적 재호출 경로
+- Final Judge LLM은 코드가 잠근 decision/branch/trade를 바꾸지 않고 reasoning/user_options만 작성
+- Benchmark payload는 기본적으로 v1 primary mode를 사용
 
 ### 아직 남음
 
-- Round 1 실제 병렬 agent execution
-- Mediator Judge LLM prompt/tool-use 연결
-- Round 2 targeted recall prompt 연결
-- Final Judge LLM prompt/tool-use 연결
-- 기존 Judge API의 주 decision source를 v1 runtime으로 완전 전환
+- Anthropic SDK `tool_use` 기반 strict schema 강제
+- 프론트엔드가 `governance_v1.round1_opinions`, `mediator_decision`, `round2_opinions`를 직접 시각화
 - scenario backtest와 4차원 metric wiring
 - Tax lot 기반 `TAX_ANNUAL_GAIN_LIMIT`
 - ADV/호가 기반 `MARKET_IMPACT_LIMIT`
@@ -89,7 +92,15 @@ API attachment와 benchmark reporting까지 포함한 smoke set:
 D:\Libra\.venv\Scripts\python.exe -m unittest tests.test_libra_v1_governance tests.test_libra_agent_api tests.test_benchmark_scenarios -v
 ```
 
-현재 18개 테스트가 통과한다.
+현재 20개 테스트가 통과한다.
+
+기존 agentic runtime smoke까지 포함:
+
+```powershell
+D:\Libra\.venv\Scripts\python.exe -m unittest tests.test_libra_v1_governance tests.test_libra_agent_api tests.test_benchmark_scenarios tests.test_libra_agentic_runtime tests.test_domain_context_adapter -v
+```
+
+현재 42개 테스트가 통과한다.
 
 실제 API 벤치마크 확인:
 
@@ -102,3 +113,19 @@ D:\Libra\.venv\Scripts\python.exe scripts\run_benchmark.py --scenario-id 09_esg_
 - `governance_v1_decision=USER_DECISION_REQUIRED`
 - `governance_v1_branch=COMPLIANCE_VETO`
 - `governance_v1_compliance=BLOCKING`
+
+v1 primary mode 실제 API 확인:
+
+```powershell
+D:\Libra\.venv\Scripts\python.exe scripts\run_benchmark.py --scenario-id 09_esg_conflict --out-dir outputs\benchmark\live_anthropic_0510_v1_primary_check --timeout-seconds 720
+```
+
+확인 결과:
+
+- `runtime.engine=governance_v1_committee`
+- `round1_agent_count=11`
+- `round2_agent_count=0`
+- `governance_v1_branch=COMPLIANCE_VETO`
+- `governance_v1_compliance=BLOCKING`
+
+`05_target_drift_rebalance`도 v1 primary mode로 실제 API 실행을 확인했다. 해당 시나리오는 리밸런싱 drift가 존재하지만 삼성전자 단일종목 IPS 한도 초과로 `COMPLIANCE_VETO`가 발생한다.

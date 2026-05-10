@@ -49,6 +49,24 @@ class ConsensusScore:
 
 
 @dataclass(slots=True)
+class MediatorDecision:
+    consensus_per_subject: dict[str, ConsensusScore]
+    targets_to_recall: list[str]
+    skip_round_2: bool
+    rationale: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "consensus_per_subject": {
+                subject: score.to_dict() for subject, score in self.consensus_per_subject.items()
+            },
+            "targets_to_recall": list(self.targets_to_recall),
+            "skip_round_2": self.skip_round_2,
+            "rationale": self.rationale,
+        }
+
+
+@dataclass(slots=True)
 class Trade:
     subject: str
     delta_pct: float

@@ -6,6 +6,7 @@ from .decision import (
     DecisionBranch,
     DecisionType,
     FinalDecision,
+    MediatorDecision,
     Trade,
     UserOption,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "IPSConfig",
     "KYCProfile",
     "MarketSnapshot",
+    "MediatorDecision",
     "Severity",
     "Trade",
     "UserOption",

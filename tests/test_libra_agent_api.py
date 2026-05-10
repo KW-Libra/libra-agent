@@ -5,7 +5,7 @@ import unittest
 from fastapi.testclient import TestClient
 
 from libra_agent.libra.agents import EvaluationAgent
-from libra_agent.libra_api import _attach_governance_v1, _build_knowledge_base, app
+from libra_agent.libra_api import _attach_governance_v1, _build_knowledge_base, _governance_v1_execution_mode, app
 from libra_agent.libra_models import PortfolioSnapshot
 
 
@@ -109,6 +109,10 @@ class LibraAgentApiTests(unittest.TestCase):
         final = updated["governance_v1"]["final_decision"]
         self.assertEqual(final["decision"], "USER_DECISION_REQUIRED")
         self.assertEqual(final["branch"], "COMPLIANCE_VETO")
+
+    def test_governance_v1_primary_mode_is_opt_in(self) -> None:
+        self.assertEqual(_governance_v1_execution_mode({}), "attach")
+        self.assertEqual(_governance_v1_execution_mode({"governance_v1": {"execution_mode": "primary"}}), "primary")
 
     def test_evaluation_endpoint_scores_stored_decision_result(self) -> None:
         client = TestClient(app)

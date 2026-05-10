@@ -317,6 +317,7 @@ def build_agent_payload(scenario: Mapping[str, Any], profiles: Mapping[str, Any]
         "knowledge_base": build_knowledge_base(scenario, universe),
         "depth": str(scenario.get("depth") or "medium"),
         "trigger": str(scenario.get("trigger") or "pull"),
+        "governance_v1": {"execution_mode": "primary"},
     }
     definition = build_portfolio_definition(scenario, universe)
     if definition is not None:

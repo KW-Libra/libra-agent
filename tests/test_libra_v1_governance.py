@@ -33,11 +33,12 @@ def _response(
     confidence: float = 0.8,
     strength: float = 0.8,
     focus_tickers: list[str] | None = None,
+    turn_number: int = 1,
 ) -> AgentResponse:
     return AgentResponse(
         agent_id=agent_id,
         opinion_id=f"{agent_id}_1",
-        turn_number=1,
+        turn_number=turn_number,
         query_understood="테스트",
         verdict=AgentVerdict.PARTIAL_ANSWER,
         evidence={},
@@ -48,6 +49,35 @@ def _response(
         reasoning_for_judge_agent=f"{agent_id} 판단",
         focus_tickers=focus_tickers or ["069500"],
     )
+
+
+class _V1JudgeClient:
+    model = "fake-v1-judge"
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def chat_json(self, *, system_prompt: str, user_prompt: str, temperature: float = 0.1):
+        del user_prompt, temperature
+        self.calls.append(system_prompt)
+        if "Mediator Judge" in system_prompt:
+            return {
+                "targets_to_recall": ["Profit", "Risk"],
+                "skip_round_2": False,
+                "rationale": "069500에서 Profit과 Risk 의견이 충돌하므로 두 에이전트를 표적 재호출합니다.",
+            }
+        return {
+            "reasoning": "Round 2 후에도 수익 관점과 위험 관점이 갈려 사용자 확인이 필요합니다.",
+            "user_question": "위험 축소와 기회 추구 중 어떤 방향을 선택하시겠습니까?",
+            "user_options": [
+                {"label": "위험축소", "supporting_agents": ["Risk"], "expected_effect": "하방 위험을 줄입니다."},
+                {"label": "현상유지", "supporting_agents": ["Cost"], "expected_effect": "추가 거래를 보류합니다."},
+                {"label": "적극행동", "supporting_agents": ["Profit"], "expected_effect": "기회 신호를 반영합니다."},
+            ],
+        }
+
+    def ensure_available(self) -> None:
+        return None
 
 
 class LibraV1GovernanceTests(unittest.TestCase):
@@ -155,6 +185,37 @@ class LibraV1GovernanceTests(unittest.TestCase):
         )
 
         self.assertEqual([response.agent_id for response in responses], ["profit", "risk", "cost"])
+
+    def test_v1_runtime_runs_round2_targeted_recall_with_llm_mediator(self) -> None:
+        client = _V1JudgeClient()
+        relaxed_ips = IPSConfig(single_ticker_limit_pct=50.0, sector_limit_pct=100.0, min_cash_pct=0.0)
+
+        result = CommitteeRuntime().run_from_agent_rounds(
+            portfolio=_portfolio(),
+            round1_agent_calls={
+                "profit": lambda: _response("profit", direction=0.9, focus_tickers=["069500"]),
+                "risk": lambda: _response("risk", direction=-0.9, focus_tickers=["069500"]),
+                "cost": lambda: _response("cost", direction=0.0, focus_tickers=["069500"]),
+            },
+            round2_agent_call_factory=lambda agent_id, _context: (
+                lambda: _response(
+                    agent_id,
+                    direction=0.8 if agent_id == "profit" else -0.8,
+                    focus_tickers=["069500"],
+                    turn_number=2,
+                )
+            ),
+            ips=relaxed_ips,
+            kyc=persona_v1_kyc(),
+            mediator_client=client,
+            final_judge_client=client,
+        )
+
+        self.assertEqual(result.mediator_decision.targets_to_recall, ["Profit", "Risk"])
+        self.assertEqual([opinion.agent for opinion in result.round2_opinions], ["Profit", "Risk"])
+        self.assertEqual(result.final_decision.decision, DecisionType.USER_DECISION_REQUIRED)
+        self.assertEqual(result.final_decision.branch, DecisionBranch.STRONG_CONFLICT)
+        self.assertIn("사용자 확인", result.final_decision.reasoning)
 
 
 if __name__ == "__main__":

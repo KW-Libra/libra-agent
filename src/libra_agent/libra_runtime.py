@@ -23,7 +23,7 @@ from .libra.prompts import (
     get_information_prompt_profile,
 )
 from .libra.constraints import default_constraints_for, validate_rebalance_plan
-from .libra.direct_indexing import PortfolioDefinition, compact_drift_context
+from .libra.direct_indexing import PortfolioDefinition, candidate_plan_from_drift, compact_drift_context, compute_drift
 from .libra.llm_clients.base import ChatClientError, ChatClientProtocol
 from .libra_validation import (
     sanitize_agent_evidence,
@@ -1406,6 +1406,121 @@ class JudgeOrchestrator:
             enable_human_interrupts=enable_human_interrupts,
         )
 
+    def run_v1_committee(
+        self,
+        *,
+        query: str,
+        portfolio: PortfolioSnapshot,
+        knowledge_base: LocalKnowledgeBase,
+        portfolio_definition: PortfolioDefinition | None = None,
+        depth: str = "medium",
+        trigger: str = "pull",
+        trigger_event: TriggerEvent | None = None,
+        deadline_seconds: int | None = None,
+        thread_id: str | None = None,
+        enable_human_interrupts: bool = False,
+        ips: Any | None = None,
+        kyc: Any | None = None,
+        market_data: Any | None = None,
+    ) -> dict[str, Any]:
+        """Run the v1 committee design as the primary Judge path.
+
+        This path follows the v1 design docs: Compliance BEFORE, Round 1
+        committee calls in parallel, Mediator target selection, optional Round
+        2 targeted recall, Compliance AFTER, then code-locked Final Judge.
+        """
+        del thread_id, enable_human_interrupts
+        started_at = datetime.now().astimezone()
+        run_state = self._initialize_run_state(
+            trigger=trigger,
+            trigger_event=trigger_event,
+            deadline_seconds=deadline_seconds,
+        )
+        drift_report = compute_drift(portfolio_definition, portfolio) if portfolio_definition else None
+        candidate_plan = candidate_plan_from_drift(drift_report) if drift_report else {}
+        if not candidate_plan and trigger == "push":
+            candidate_plan = self._candidate_plan_from_trigger(
+                portfolio=portfolio,
+                trigger_event=trigger_event,
+            )
+
+        from .libra.committee import CommitteeRuntime
+
+        agent_order = (
+            *CORE_ROUTING_AGENT_IDS,
+            *(agent_id for agent_id in DOMAIN_ROUTING_AGENT_IDS if agent_id != "compliance" and agent_id in self.domain_agents),
+        )
+        round1_calls = {
+            agent_id: self._v1_agent_call(
+                agent_id=agent_id,
+                query=query,
+                portfolio=portfolio,
+                knowledge_base=knowledge_base,
+                candidate_plan=candidate_plan,
+                depth=depth,
+                trigger=trigger,
+                trigger_event=trigger_event,
+                turn_number=index,
+                round2_context=None,
+            )
+            for index, agent_id in enumerate(agent_order, start=1)
+        }
+
+        def round2_factory(agent_id: str, round2_context: str):
+            return self._v1_agent_call(
+                agent_id=agent_id,
+                query=query,
+                portfolio=portfolio,
+                knowledge_base=knowledge_base,
+                candidate_plan=candidate_plan,
+                depth=depth,
+                trigger=trigger,
+                trigger_event=trigger_event,
+                turn_number=len(agent_order) + 1,
+                round2_context=round2_context,
+            )
+
+        governance = CommitteeRuntime().run_from_agent_rounds(
+            portfolio=portfolio,
+            round1_agent_calls=round1_calls,
+            round2_agent_call_factory=round2_factory,
+            ips=ips,
+            kyc=kyc,
+            market_data=market_data,
+            mediator_client=self.client,
+            final_judge_client=self.client,
+        )
+        elapsed = (datetime.now().astimezone() - started_at).total_seconds()
+        all_responses = [*governance.round1_responses, *governance.round2_responses]
+        decision = self._decision_from_v1_governance(
+            query=query,
+            portfolio=portfolio,
+            governance=governance,
+            responses=all_responses,
+            run_state=run_state,
+            candidate_plan=candidate_plan,
+            elapsed_seconds=elapsed,
+        )
+        return {
+            "model": self.client.model,
+            "query": query,
+            "portfolio": portfolio.to_dict(),
+            "agent_responses": [response.to_dict() for response in all_responses],
+            "decision": decision.to_dict(),
+            "knowledge_sources": dict(knowledge_base.source_paths),
+            "governance_v1": governance.to_dict(),
+            "direct_indexing": {
+                "portfolio_definition": portfolio_definition.to_dict() if portfolio_definition else None,
+                "drift_report": drift_report.to_dict() if drift_report else None,
+                "candidate_rebalance_plan": dict(candidate_plan),
+            },
+            "runtime": {
+                "engine": "governance_v1_committee",
+                "round1_agent_count": len(governance.round1_opinions),
+                "round2_agent_count": len(governance.round2_opinions),
+            },
+        }
+
     def resume(
         self,
         *,
@@ -1416,6 +1531,279 @@ class JudgeOrchestrator:
             thread_id=thread_id,
             resume_payload=resume_payload,
         )
+
+    def _v1_agent_call(
+        self,
+        *,
+        agent_id: str,
+        query: str,
+        portfolio: PortfolioSnapshot,
+        knowledge_base: LocalKnowledgeBase,
+        candidate_plan: Mapping[str, float],
+        depth: str,
+        trigger: str,
+        trigger_event: TriggerEvent | None,
+        turn_number: int,
+        round2_context: str | None,
+    ):
+        def call() -> AgentResponse:
+            return self._execute_v1_committee_agent(
+                agent_id=agent_id,
+                query=query,
+                portfolio=portfolio,
+                knowledge_base=knowledge_base,
+                candidate_plan=candidate_plan,
+                depth=depth,
+                trigger=trigger,
+                trigger_event=trigger_event,
+                turn_number=turn_number,
+                round2_context=round2_context,
+            )
+
+        return call
+
+    def _execute_v1_committee_agent(
+        self,
+        *,
+        agent_id: str,
+        query: str,
+        portfolio: PortfolioSnapshot,
+        knowledge_base: LocalKnowledgeBase,
+        candidate_plan: Mapping[str, float],
+        depth: str,
+        trigger: str,
+        trigger_event: TriggerEvent | None,
+        turn_number: int,
+        round2_context: str | None,
+    ) -> AgentResponse:
+        agent_id = canonical_agent_id(agent_id)
+        context = self._default_agent_context(
+            agent_id=agent_id,
+            query=query,
+            responses=[],
+            trigger_event=trigger_event,
+            candidate_plan=candidate_plan,
+        )
+        if round2_context:
+            context = f"{context}\n\n[Round 2 targeted recall]\n{round2_context}"
+        note = self._default_agent_note(
+            agent_id=agent_id,
+            query=query,
+            responses=[],
+            trigger=trigger,
+            trigger_event=trigger_event,
+            candidate_plan=candidate_plan,
+        )
+        note_prefix = "v1 Committee Round 2 표적 재호출" if round2_context else "v1 Committee Round 1 독립 발화"
+        note = f"{note_prefix}. {note}" if note else note_prefix
+        if agent_id in {"disclosure", "news", "report"}:
+            agent = self._agent_by_id(agent_id)
+            response = agent.run(
+                query=self._default_agent_query(agent_id=agent_id, trigger=trigger),
+                context=context,
+                fallback=self._default_agent_fallback(agent_id=agent_id, trigger=trigger),
+                note=note,
+                turn_number=turn_number,
+                portfolio=portfolio,
+                knowledge_base=knowledge_base,
+                depth=depth,
+            )
+        elif agent_id == "profit":
+            response = self.profit_agent.run(
+                query=query,
+                turn_number=turn_number,
+                portfolio=portfolio,
+                knowledge_base=knowledge_base,
+                rebalance_plan=dict(candidate_plan),
+            )
+        elif agent_id == "cost":
+            response = self.cost_agent.run(
+                query=query,
+                turn_number=turn_number,
+                portfolio=portfolio,
+                rebalance_plan=dict(candidate_plan),
+            )
+        elif agent_id in self.domain_agents:
+            response = self._execute_v1_domain_agent(
+                agent_id=agent_id,
+                query=query,
+                context=context,
+                turn_number=turn_number,
+                portfolio=portfolio,
+                candidate_plan=candidate_plan,
+            )
+        else:
+            raise ChatClientError(f"Unknown v1 committee agent: {agent_id}")
+        return sanitize_agent_response_payload(
+            response.to_dict(),
+            agent_id=agent_id,
+            portfolio=portfolio,
+            query=query,
+            turn_number=turn_number,
+            opinion_id=response.opinion_id,
+            depth=depth,
+        )
+
+    def _execute_v1_domain_agent(
+        self,
+        *,
+        agent_id: str,
+        query: str,
+        context: str,
+        turn_number: int,
+        portfolio: PortfolioSnapshot,
+        candidate_plan: Mapping[str, float],
+    ) -> AgentResponse:
+        from libra_agent.domain_agents._adapter import (
+            _run_async,
+            domain_verdict_to_agent_response,
+            portfolio_snapshot_to_domain_context,
+        )
+
+        proposed_trades = [
+            {
+                "symbol": ticker,
+                "weight_delta": float(delta),
+                "side": "buy" if float(delta) > 0 else "sell" if float(delta) < 0 else "hold",
+            }
+            for ticker, delta in candidate_plan.items()
+        ]
+        ctx = portfolio_snapshot_to_domain_context(
+            portfolio,
+            user_id="libra",
+            proposed_trades=proposed_trades,
+            market_context_str=context,
+        )
+        ctx.router = getattr(self, "domain_router", None)
+        verdict = _run_async(self.domain_agents[agent_id].deliberate(ctx))
+        return domain_verdict_to_agent_response(
+            verdict,
+            agent_id=agent_id,
+            turn_number=turn_number,
+            query=query,
+        )
+
+    def _decision_from_v1_governance(
+        self,
+        *,
+        query: str,
+        portfolio: PortfolioSnapshot,
+        governance: Any,
+        responses: list[AgentResponse],
+        run_state: RunState,
+        candidate_plan: Mapping[str, float],
+        elapsed_seconds: float,
+    ) -> JudgeDecision:
+        final = governance.final_decision
+        trade_plan = {
+            trade.subject: round(float(trade.delta_pct) / 100.0, 6)
+            for trade in final.trades
+            if abs(float(trade.delta_pct)) >= 0.1
+        }
+        called_agents = [response.agent_id for response in responses]
+        skip_rationale = {
+            "compliance": "Compliance는 LLM 위원회가 아니라 BEFORE/AFTER 코드 룰 엔진으로 실행되었습니다."
+        }
+        options = [option.label for option in (final.user_options or [])]
+        urgency = (
+            Urgency.WATCH
+            if final.decision.value == "USER_DECISION_REQUIRED"
+            else Urgency.SCHEDULED if final.decision.value == "REBALANCE" else Urgency.DEFER
+        )
+        consensus_values = [abs(score.weighted_score) for score in governance.consensus_per_subject.values()]
+        consensus_score = max(consensus_values, default=0.0)
+        conflict_count = sum(
+            1
+            for score in governance.consensus_per_subject.values()
+            if score.branch.value in {"CONFLICT", "INSUFFICIENT_VOTES"}
+        )
+        divergence_score = conflict_count / max(1, len(governance.consensus_per_subject))
+        trace = [
+            {
+                "turn_number": 0,
+                "phase": DecisionPhase.INFORMATION_GATHERING.value,
+                "actor": "Compliance Rule Engine",
+                "query": "BEFORE check",
+                "summary": "현재 포트폴리오가 사용자 IPS/KYC hard rule을 위반하는지 코드로 검사했습니다.",
+                "context": governance.compliance_before.state,
+                "note": "LLM 호출 없음",
+            },
+            {
+                "turn_number": 1,
+                "phase": DecisionPhase.DELIBERATION.value,
+                "actor": "Round 1 Committee",
+                "query": "11 LLM agent parallel review",
+                "summary": f"{len(governance.round1_opinions)}개 LLM 에이전트가 독립 의견을 제출했습니다.",
+                "context": ", ".join(opinion.agent for opinion in governance.round1_opinions),
+            },
+            {
+                "turn_number": 2,
+                "phase": DecisionPhase.CONSENSUS.value,
+                "actor": "Mediator Judge",
+                "query": "conflict selection",
+                "summary": governance.mediator_decision.rationale,
+                "context": f"targets={governance.mediator_decision.targets_to_recall}",
+            },
+        ]
+        if governance.round2_opinions:
+            trace.append(
+                {
+                    "turn_number": 3,
+                    "phase": DecisionPhase.DELIBERATION.value,
+                    "actor": "Round 2 Targeted Recall",
+                    "query": "targeted re-check",
+                    "summary": f"{len(governance.round2_opinions)}개 충돌 에이전트를 표적 재호출했습니다.",
+                    "context": ", ".join(opinion.agent for opinion in governance.round2_opinions),
+                }
+            )
+        trace.append(
+            {
+                "turn_number": 4,
+                "phase": DecisionPhase.DECISION.value,
+                "actor": "Final Judge",
+                "query": final.branch.value,
+                "summary": final.reasoning,
+                "context": f"decision={final.decision.value}",
+            }
+        )
+        summary = f"{final.decision.value}: {final.reasoning}"
+        notification = UserNotification(
+            level=self._notification_level(DecisionType(final.decision.value), urgency),
+            body=final.user_question or summary,
+            action_required=final.decision.value == "USER_DECISION_REQUIRED",
+            kind="governance_v1_final_decision",
+            estimated_followup=None,
+            sent_at=self._notification_timestamp(),
+        )
+        decision = JudgeDecision.from_dict(
+            {
+                "decision": final.decision.value,
+                "summary": summary,
+                "confidence": min(1.0, max(0.5, consensus_score)),
+                "urgency": urgency.value,
+                "called_agents": called_agents,
+                "skipped_agents": ["compliance"],
+                "skip_rationale": skip_rationale,
+                "candidate_rebalance_plan": trade_plan,
+                "decision_trace": trace,
+                "reasoning": final.reasoning,
+                "user_notification": notification.to_dict(),
+                "consensus_score": consensus_score,
+                "divergence_score": divergence_score,
+                "needs_trade_evaluation": bool(candidate_plan or trade_plan),
+                "trigger": run_state.trigger,
+                "trigger_event": run_state.trigger_event.to_dict() if run_state.trigger_event else None,
+                "deadline_at": run_state.deadline_at.isoformat(timespec="seconds") if run_state.deadline_at else None,
+                "elapsed_seconds": elapsed_seconds,
+                "options": options,
+                "auto_safeguards": {
+                    "governance_v1_branch": final.branch.value,
+                    "compliance_after": governance.compliance_after.to_dict(),
+                },
+                "notification_log": [item.to_dict() for item in [*run_state.notification_log, notification]],
+            }
+        )
+        return decision
 
     def _initialize_run_state(
         self,

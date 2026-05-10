@@ -44,6 +44,7 @@ class BenchmarkScenarioTests(unittest.TestCase):
         payload = run_benchmark.build_agent_payload(scenario, self.profiles, self.universe)
 
         self.assertEqual(payload["trigger"], "pull")
+        self.assertEqual(payload["governance_v1"]["execution_mode"], "primary")
         self.assertEqual(payload["portfolio"]["holdings"][0]["ticker"], "005930")
         self.assertEqual(payload["portfolio"]["holdings"][0]["sector"], "반도체")
         self.assertEqual(payload["portfolio"]["holdings"][0]["esg_score"], 78)
