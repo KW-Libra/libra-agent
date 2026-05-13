@@ -47,8 +47,8 @@ uv run uvicorn libra_agent.main:app --reload --host 0.0.0.0 --port 8000
 | POST | `/api/runs` | body=`RunStartRequest`, response = **SSE stream**. `approval_required=true` 이면 HITL interrupt 골격을 태움 |
 | POST | `/api/runs/{thread_id}/resume` | body=`ResumeRequest` (사용자 옵션 선택) |
 
-SSE 이벤트는 현재 `run_started` / `node_started` / `node_completed` / `interrupt_required` / `resume_received` / `run_completed` / `run_failed` stub.
-다음 단계에서 `design_spec_v1.md` §2 의 RunEvent union 으로 정교화 (compliance_check / agent_started / mediator_completed / final_decision_completed / interrupt_required 등).
+SSE 이벤트 계약 v0 는 `docs/run-events.md` 와 `contracts/run_events.py` 기준.
+현재는 제품 판단 로직 없이 `run_started` / `node_started` / `node_completed` / `interrupt_required` / `resume_received` / `resume_ignored` / `run_completed` / `run_failed` 만 고정.
 
 ## 횡단
 
@@ -60,11 +60,12 @@ SSE 이벤트는 현재 `run_started` / `node_started` / `node_completed` / `int
 | Checkpointer | `runtime/checkpointer.py` — lifespan 에서 `setup()` 1회, 종료 시 풀 close |
 | 그래프 | `runtime/graph.py` — 노드 stub (compliance_before / round1 / mediator / final_judge) |
 | SSE | `api/sse.py` — `graph.astream_events()` → `sse_starlette` 이벤트 dict |
+| RunEvent contract | `docs/run-events.md`, `contracts/run_events.py` — 제품 로직과 분리된 SSE 계약 |
 
 ## 다음 작업
 - `schemas/` — spec §2 (AgentOpinion / Vote / FinalDecision / ComplianceCheck) + contracts 차용 (portfolioSnapshot, push-trigger-event, user-approval-response)
 - `agents/` — 11 LLM 에이전트 prompt (Risk reference 부터, `prompts_v1.md` §5)
 - `mediator.py` / `final_judge.py` — Anthropic `tool_use` 강제
 - `compliance/` — 10 룰 (코드, LLM 아님)
-- SSE 이벤트 정교화 — RunEvent discriminated union
+- 제품 결정 후 RunEvent v1 확장 — compliance_check / agent_started / mediator_completed 등
 - 실제 agent 판단 로직 — 지금은 `approval_required` 플래그로 HITL/checkpoint/resume 배선만 검증
