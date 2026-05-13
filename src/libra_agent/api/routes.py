@@ -1,8 +1,8 @@
 """HTTP / SSE 라우트 — 골격."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
+from typing import Annotated, Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Body
@@ -25,6 +25,7 @@ class RunStartRequest(BaseModel):
     portfolio: dict[str, Any] | None = None
     trigger: str = Field(default="pull")
     thread_id: str | None = None
+    approval_required: bool = False
 
 
 class ResumeRequest(BaseModel):
@@ -43,7 +44,7 @@ async def health() -> dict[str, Any]:
     return {
         "status": "UP",
         "service": "libra-agent",
-        "now": datetime.now(timezone.utc).isoformat(),
+        "now": datetime.now(UTC).isoformat(),
     }
 
 
@@ -55,7 +56,10 @@ async def start_run(body: RunStartRequest) -> EventSourceResponse:
 
 
 @router.post("/api/runs/{thread_id}/resume")
-async def resume_run(thread_id: str, body: ResumeRequest = Body(...)) -> EventSourceResponse:
+async def resume_run(
+    thread_id: str,
+    body: Annotated[ResumeRequest, Body()],
+) -> EventSourceResponse:
     if not thread_id:
         raise ApiError(ErrorCode.VALIDATION_FAILED, "thread_id required")
     log.info(

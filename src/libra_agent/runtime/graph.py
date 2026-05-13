@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from libra_agent.common.logging import get_logger
 from libra_agent.runtime.checkpointer import get_checkpointer
@@ -30,6 +31,7 @@ class GraphState(TypedDict, total=False):
     trigger: str
     query: str
     portfolio: dict[str, Any]
+    approval_required: bool
     round1_opinions: list[dict[str, Any]]
     round2_opinions: list[dict[str, Any]]
     mediator_decision: dict[str, Any]
@@ -37,6 +39,9 @@ class GraphState(TypedDict, total=False):
     compliance_before: dict[str, Any]
     compliance_after: dict[str, Any]
     final_decision: dict[str, Any]
+    approval_request: dict[str, Any]
+    approval_response: dict[str, Any]
+    run_status: str
     error: str | None
 
 
@@ -64,29 +69,73 @@ async def _node_mediator(state: GraphState) -> dict[str, Any]:
 
 async def _node_final_judge(state: GraphState) -> dict[str, Any]:
     log.info("node.final_judge", thread_id=state.get("thread_id"))
+    approval_required = bool(state.get("approval_required"))
     return {
         "compliance_after": {"can_proceed": True, "violations": [], "state": "AFTER"},
         "final_decision": {
             "decision": "HOLD",
-            "branch": "CONSENSUS",
+            "branch": "USER_APPROVAL_REQUIRED" if approval_required else "CONSENSUS",
+            "requires_approval": approval_required,
             "trades": [],
             "reasoning": "(stub) — 다음 단계에서 채움",
         },
     }
 
 
-def build_graph():
+async def _node_human_review(state: GraphState) -> dict[str, Any]:
+    log.info("node.human_review", thread_id=state.get("thread_id"))
+    final_decision = state.get("final_decision") or {}
+    if not final_decision.get("requires_approval"):
+        return {"run_status": "completed"}
+
+    approval_request = {
+        "type": "human_approval",
+        "reason": "approval_required",
+        "message": "최종 결정 적용 전에 사용자 확인이 필요합니다.",
+        "decision": final_decision.get("decision"),
+        "branch": final_decision.get("branch"),
+        "options": [
+            {"decision": "APPROVE", "label": "승인"},
+            {"decision": "REJECT", "label": "거절"},
+            {"decision": "REVISE", "label": "수정 요청"},
+        ],
+    }
+    response = interrupt(approval_request)
+    approval_response = _normalize_approval_response(response)
+
+    return {
+        "approval_request": approval_request,
+        "approval_response": approval_response,
+        "run_status": "completed_after_resume",
+    }
+
+
+def _normalize_approval_response(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return {
+            "approved": bool(value.get("approved", False)),
+            "decision": value.get("decision"),
+            "option_index": value.get("option_index"),
+            "override_plan": value.get("override_plan"),
+            "note": value.get("note"),
+        }
+    return {"approved": bool(value), "decision": None, "option_index": None}
+
+
+def build_graph(checkpointer=None):
     builder: StateGraph = StateGraph(GraphState)
 
     builder.add_node("compliance_before", _node_compliance_before)
     builder.add_node("round1", _node_round1)
     builder.add_node("mediator", _node_mediator)
     builder.add_node("final_judge", _node_final_judge)
+    builder.add_node("human_review", _node_human_review)
 
     builder.add_edge(START, "compliance_before")
     builder.add_edge("compliance_before", "round1")
     builder.add_edge("round1", "mediator")
     builder.add_edge("mediator", "final_judge")
-    builder.add_edge("final_judge", END)
+    builder.add_edge("final_judge", "human_review")
+    builder.add_edge("human_review", END)
 
-    return builder.compile(checkpointer=get_checkpointer())
+    return builder.compile(checkpointer=checkpointer or get_checkpointer())

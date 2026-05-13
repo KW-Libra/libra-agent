@@ -44,10 +44,10 @@ uv run uvicorn libra_agent.main:app --reload --host 0.0.0.0 --port 8000
 | Method | Path | 비고 |
 |---|---|---|
 | GET | `/health` | public |
-| POST | `/api/runs` | body=`RunStartRequest`, response = **SSE stream** |
+| POST | `/api/runs` | body=`RunStartRequest`, response = **SSE stream**. `approval_required=true` 이면 HITL interrupt 골격을 태움 |
 | POST | `/api/runs/{thread_id}/resume` | body=`ResumeRequest` (사용자 옵션 선택) |
 
-SSE 이벤트는 현재 `run_started` / `node_started` / `node_completed` / `run_completed` / `run_failed` stub.
+SSE 이벤트는 현재 `run_started` / `node_started` / `node_completed` / `interrupt_required` / `resume_received` / `run_completed` / `run_failed` stub.
 다음 단계에서 `design_spec_v1.md` §2 의 RunEvent union 으로 정교화 (compliance_check / agent_started / mediator_completed / final_decision_completed / interrupt_required 등).
 
 ## 횡단
@@ -67,4 +67,4 @@ SSE 이벤트는 현재 `run_started` / `node_started` / `node_completed` / `run
 - `mediator.py` / `final_judge.py` — Anthropic `tool_use` 강제
 - `compliance/` — 10 룰 (코드, LLM 아님)
 - SSE 이벤트 정교화 — RunEvent discriminated union
-- `interrupt()` resume — `Command(resume={...})` 패턴
+- 실제 agent 판단 로직 — 지금은 `approval_required` 플래그로 HITL/checkpoint/resume 배선만 검증
