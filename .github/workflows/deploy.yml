@@ -43,7 +43,7 @@ jobs:
             --exclude=".venv" \
             --exclude="__pycache__" \
             --exclude="*.pyc" \
-            -czf libra-agent.tar.gz .
+            -czf "${RUNNER_TEMP}/libra-agent.tar.gz" .
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -57,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           : "${DEPLOY_BUCKET:?Set repository variable DEPLOY_BUCKET}"
-          aws s3 cp libra-agent.tar.gz "s3://${DEPLOY_BUCKET}/deploy-artifacts/agent/${GITHUB_SHA}/libra-agent.tar.gz"
+          aws s3 cp "${RUNNER_TEMP}/libra-agent.tar.gz" "s3://${DEPLOY_BUCKET}/deploy-artifacts/agent/${GITHUB_SHA}/libra-agent.tar.gz"
 
       - name: Deploy through SSM
         env:
