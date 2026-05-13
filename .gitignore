@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+.venv/
+venv/
+
+.env
+.env.local
+.env.*.local
+
+*.log
+logs/
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+
+build/
+dist/
+
+# data dumps
+*.parquet
+*.sqlite
+data/cache/

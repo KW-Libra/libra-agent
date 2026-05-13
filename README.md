@@ -1,0 +1,70 @@
+# libra-agent
+
+Libra 멀티에이전트 의사결정 거버넌스 — Python LangGraph + FastAPI 서버.
+
+## Stack
+- Python 3.12 + uv
+- FastAPI + uvicorn + sse-starlette
+- LangGraph + `langgraph-checkpoint-postgres` (`AsyncPostgresSaver`)
+- Anthropic SDK (Haiku 4.5 / Sonnet 4.6)
+- Pydantic v2 + pydantic-settings
+- structlog (JSON / console 자동 분기)
+- psycopg 3 (async)
+- boto3 (S3)
+
+## 의사결정 (왜 이렇게)
+- **A-2**: 도메인 데이터 (portfolio, decision history, reports) 소유 책임은 agent 한 곳. backend (Spring) 는 users 만.
+- **B-2**: LangGraph `astream_events` 로 노드 전이 emit → SSE 응답. Spring 이 그대로 Vue 까지 passthrough.
+- **AsyncPostgresSaver**: SqliteSaver 안 씀. `interrupt()` resume 시 process 죽었다 살아도 thread_id 로 복원 가능. backend Postgres 컨테이너 공유.
+
+## Run (local)
+
+```powershell
+# 1. Postgres 띄우기 (libra-backend 의 docker-compose 재사용)
+cd ..\libra-backend
+docker compose up -d
+cd ..\libra-agent
+
+# 2. uv 가상환경 + 의존성
+uv sync
+
+# 3. env
+copy .env.example .env
+# .env 에 ANTHROPIC_API_KEY 채움
+
+# 4. run
+uv run uvicorn libra_agent.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+- http://localhost:8000/health
+- http://localhost:8000/docs (Swagger UI)
+
+## 엔드포인트 (현재 골격)
+
+| Method | Path | 비고 |
+|---|---|---|
+| GET | `/health` | public |
+| POST | `/api/runs` | body=`RunStartRequest`, response = **SSE stream** |
+| POST | `/api/runs/{thread_id}/resume` | body=`ResumeRequest` (사용자 옵션 선택) |
+
+SSE 이벤트는 현재 `run_started` / `node_started` / `node_completed` / `run_completed` / `run_failed` stub.
+다음 단계에서 `design_spec_v1.md` §2 의 RunEvent union 으로 정교화 (compliance_check / agent_started / mediator_completed / final_decision_completed / interrupt_required 등).
+
+## 횡단
+
+| 항목 | 위치 |
+|---|---|
+| traceId | `common/correlation.py` — `contextvars.ContextVar`. Spring 의 `X-Trace-Id` 헤더로 들어오거나 새로 발급 |
+| 로깅 | `common/logging.py` — structlog. `LOG_FORMAT=json` 이면 JSON, 아니면 console |
+| 에러 응답 | `common/errors.py` — `ApiError` → RFC 7807 ProblemDetail (Spring 과 같은 포맷) |
+| Checkpointer | `runtime/checkpointer.py` — lifespan 에서 `setup()` 1회, 종료 시 풀 close |
+| 그래프 | `runtime/graph.py` — 노드 stub (compliance_before / round1 / mediator / final_judge) |
+| SSE | `api/sse.py` — `graph.astream_events()` → `sse_starlette` 이벤트 dict |
+
+## 다음 작업
+- `schemas/` — spec §2 (AgentOpinion / Vote / FinalDecision / ComplianceCheck) + contracts 차용 (portfolioSnapshot, push-trigger-event, user-approval-response)
+- `agents/` — 11 LLM 에이전트 prompt (Risk reference 부터, `prompts_v1.md` §5)
+- `mediator.py` / `final_judge.py` — Anthropic `tool_use` 강제
+- `compliance/` — 10 룰 (코드, LLM 아님)
+- SSE 이벤트 정교화 — RunEvent discriminated union
+- `interrupt()` resume — `Command(resume={...})` 패턴
