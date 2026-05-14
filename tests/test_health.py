@@ -21,3 +21,13 @@ def test_health_endpoint():
     assert body["status"] == "UP"
     assert body["service"] == "libra-agent"
     assert "now" in body
+
+
+def test_internal_knowledge_current_endpoint_returns_summary():
+    client = TestClient(app)
+    response = client.get("/internal/knowledge/current")
+    assert response.status_code == 200
+    body = response.json()
+    assert "summary" in body
+    assert "file_locations" in body
+    assert "payloads" not in body

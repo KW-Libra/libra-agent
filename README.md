@@ -60,6 +60,8 @@ promote한 knowledge artifact만 읽는다.
 - 코드 계약: `contracts/ingest_jobs.py`
 - 기본 cache 위치: `/opt/libra/knowledge/current`
 - S3 prefix: `knowledge/current`
+- reader: `knowledge/reader.py`
+- smoke endpoint: `GET /internal/knowledge/current`
 
 ## 횡단
 

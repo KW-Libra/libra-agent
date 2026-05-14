@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     anthropic_sonnet_model: str = "claude-sonnet-4-6"
 
     # --- S3 ---
-    s3_bucket: str = "libra-reports-dev"
+    s3_bucket: str = ""
     aws_region: str = "ap-northeast-2"
 
     # --- Knowledge cache / ingest worker handoff ---

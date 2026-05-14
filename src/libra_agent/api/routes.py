@@ -12,6 +12,7 @@ from sse_starlette.sse import EventSourceResponse
 from libra_agent.api.sse import resume_and_stream, run_and_stream
 from libra_agent.common.errors import ApiError, ErrorCode
 from libra_agent.common.logging import get_logger
+from libra_agent.knowledge import KnowledgeReader
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -46,6 +47,12 @@ async def health() -> dict[str, Any]:
         "service": "libra-agent",
         "now": datetime.now(UTC).isoformat(),
     }
+
+
+@router.get("/internal/knowledge/current")
+async def current_knowledge(include_payloads: bool = False) -> dict[str, Any]:
+    snapshot = KnowledgeReader.from_settings().load_current()
+    return snapshot.to_dict(include_payloads=include_payloads)
 
 
 @router.post("/api/runs")

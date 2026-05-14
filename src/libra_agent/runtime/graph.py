@@ -20,6 +20,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from libra_agent.common.logging import get_logger
+from libra_agent.knowledge import KnowledgeReader
 from libra_agent.runtime.checkpointer import get_checkpointer
 
 log = get_logger(__name__)
@@ -32,6 +33,7 @@ class GraphState(TypedDict, total=False):
     query: str
     portfolio: dict[str, Any]
     approval_required: bool
+    knowledge_snapshot: dict[str, Any]
     round1_opinions: list[dict[str, Any]]
     round2_opinions: list[dict[str, Any]]
     mediator_decision: dict[str, Any]
@@ -52,8 +54,15 @@ async def _node_compliance_before(state: GraphState) -> dict[str, Any]:
 
 async def _node_round1(state: GraphState) -> dict[str, Any]:
     log.info("node.round1", thread_id=state.get("thread_id"))
+    knowledge_snapshot = KnowledgeReader.from_settings().load_current().to_dict(include_payloads=True)
+    log.info(
+        "node.round1.knowledge_loaded",
+        thread_id=state.get("thread_id"),
+        available=knowledge_snapshot["summary"]["available"],
+        source=knowledge_snapshot["summary"]["source"],
+    )
     # 다음 단계: Send API 로 11개 에이전트 병렬 호출
-    return {"round1_opinions": []}
+    return {"knowledge_snapshot": knowledge_snapshot, "round1_opinions": []}
 
 
 async def _node_mediator(state: GraphState) -> dict[str, Any]:
