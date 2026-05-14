@@ -1,4 +1,4 @@
-"""LangGraph AsyncPostgresSaver 라이프사이클.
+"""LangGraph AsyncPostgresSaver lifecycle.
 
 - 앱 시작 시 ConnectionPool 열고 setup() 호출 → 테이블 4개 자동 생성
   (checkpoints, checkpoint_blobs, checkpoint_writes, checkpoint_migrations)
@@ -6,6 +6,9 @@
 
 interrupt() resume 시: 같은 thread_id 로 graph.invoke 하면 saver 가
 마지막 state 로드해서 이어서 실행. 프로세스 죽었다 살아도 보존.
+
+This stores LangGraph runtime checkpoints only. Business/domain data belongs to
+the backend API and must not be persisted here.
 """
 from __future__ import annotations
 

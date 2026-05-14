@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
-    # --- Database (backend Postgres 공유) ---
+    # --- Checkpoint database (LangGraph runtime state only) ---
     database_url: str = "postgresql://libra:libra@localhost:5432/libra"
 
     # --- Anthropic ---

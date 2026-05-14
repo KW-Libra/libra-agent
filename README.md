@@ -13,14 +13,14 @@ Libra 멀티에이전트 의사결정 거버넌스 — Python LangGraph + FastAP
 - boto3 (S3)
 
 ## 의사결정 (왜 이렇게)
-- **A-2**: 도메인 데이터 (portfolio, decision history, reports) 소유 책임은 agent 한 곳. backend (Spring) 는 users 만.
+- **Agent is not the domain DB owner**: portfolio, broker account/order state, decision history, report metadata 같은 비즈니스 영속 데이터의 system of record 는 backend 이다. agent 는 판단 워크플로우와 SSE 이벤트 생성을 맡고, 필요한 입력은 backend/knowledge artifact 를 통해 받는다.
 - **B-2**: LangGraph `astream_events` 로 노드 전이 emit → SSE 응답. Spring 이 그대로 Vue 까지 passthrough.
-- **AsyncPostgresSaver**: SqliteSaver 안 씀. `interrupt()` resume 시 process 죽었다 살아도 thread_id 로 복원 가능. backend Postgres 컨테이너 공유.
+- **AsyncPostgresSaver**: LangGraph checkpoint 전용 저장소다. process 죽었다 살아도 `thread_id` 로 resume 하기 위한 런타임 상태만 저장하며, 포트폴리오/주문/리포트 같은 도메인 데이터는 저장하지 않는다.
 
 ## Run (local)
 
 ```powershell
-# 1. Postgres 띄우기 (libra-backend 의 docker-compose 재사용)
+# 1. 로컬 Postgres 띄우기 (개발 편의상 libra-backend docker-compose 재사용)
 cd ..\libra-backend
 docker compose up -d
 cd ..\libra-agent
