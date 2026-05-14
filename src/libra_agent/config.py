@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     s3_bucket: str = "libra-reports-dev"
     aws_region: str = "ap-northeast-2"
 
+    # --- Knowledge cache / ingest worker handoff ---
+    knowledge_cache_dir: str = "/opt/libra/knowledge/current"
+    knowledge_s3_prefix: str = "knowledge/current"
+    ingest_jobs_enabled: bool = False
+
     # --- Logging ---
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_format: Literal["json", "console"] = "console"

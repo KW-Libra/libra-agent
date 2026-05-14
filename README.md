@@ -50,6 +50,17 @@ uv run uvicorn libra_agent.main:app --reload --host 0.0.0.0 --port 8000
 SSE 이벤트 계약 v0 는 `docs/run-events.md` 와 `contracts/run_events.py` 기준.
 현재는 제품 판단 로직 없이 `run_started` / `node_started` / `node_completed` / `interrupt_required` / `resume_received` / `resume_ignored` / `run_completed` / `run_failed` 만 고정.
 
+## Ingest Handoff
+
+Agent는 요청 처리 중 `libra-ingest`를 직접 실행하지 않는다. 최신 데이터가 필요하면
+`ingest_jobs` 계약에 맞춰 job을 만들고, 별도 `libra-ingest-worker`가 성공적으로
+promote한 knowledge artifact만 읽는다.
+
+- 계약 문서: `docs/ingest-job-contract.md`
+- 코드 계약: `contracts/ingest_jobs.py`
+- 기본 cache 위치: `/opt/libra/knowledge/current`
+- S3 prefix: `knowledge/current`
+
 ## 횡단
 
 | 항목 | 위치 |
