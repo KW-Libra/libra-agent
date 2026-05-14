@@ -108,7 +108,16 @@ class KnowledgeReader:
                 if logical_name in REQUIRED_FILES:
                     missing.append(logical_name)
                 continue
-            payloads[logical_name] = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                payloads[logical_name] = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                return KnowledgeSnapshot(
+                    source="local",
+                    payloads=payloads,
+                    file_locations=locations,
+                    missing_files=missing,
+                    error=f"{path}: {type(exc).__name__}: {exc}",
+                )
             locations[logical_name] = str(path)
 
         return KnowledgeSnapshot(
@@ -141,7 +150,16 @@ class KnowledgeReader:
                         error=f"{type(exc).__name__}: {exc}",
                     )
                 continue
-            payloads[logical_name] = json.loads(response["Body"].read().decode("utf-8"))
+            try:
+                payloads[logical_name] = json.loads(response["Body"].read().decode("utf-8"))
+            except Exception as exc:
+                return KnowledgeSnapshot(
+                    source="s3",
+                    payloads=payloads,
+                    file_locations=locations,
+                    missing_files=missing,
+                    error=f"{location}: {type(exc).__name__}: {exc}",
+                )
             locations[logical_name] = location
 
         return KnowledgeSnapshot(

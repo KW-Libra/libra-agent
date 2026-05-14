@@ -61,3 +61,13 @@ def test_reader_reports_missing_required_artifacts(tmp_path: Path):
     assert snapshot.available is False
     assert snapshot.summary()["source"] == "missing"
     assert snapshot.summary()["missing_files"] == ["manifest", "normalized_documents", "events"]
+
+
+def test_reader_reports_invalid_local_json_without_raising(tmp_path: Path):
+    (tmp_path / "manifest.json").write_text("{", encoding="utf-8")
+
+    snapshot = KnowledgeReader(cache_dir=tmp_path, s3_bucket=None).load_current()
+
+    assert snapshot.available is False
+    assert snapshot.summary()["source"] == "local"
+    assert "JSONDecodeError" in (snapshot.summary()["error"] or "")
