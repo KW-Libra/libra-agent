@@ -13,7 +13,10 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def test_reader_loads_local_current_artifacts(tmp_path: Path):
-    _write_json(tmp_path / "manifest.json", {"generated_at": "2026-05-14T00:00:00Z", "counts": {"events": 1}})
+    _write_json(
+        tmp_path / "manifest.json",
+        {"generated_at": "2026-05-14T00:00:00Z", "counts": {"events": 1}},
+    )
     _write_json(tmp_path / "normalized_documents.json", {"documents": []})
     _write_json(tmp_path / "events.json", {"events": [{}]})
     _write_json(tmp_path / "consensus_snapshot.json", {"snapshots": [{}]})
@@ -29,7 +32,10 @@ def test_reader_loads_local_current_artifacts(tmp_path: Path):
 
 def test_reader_falls_back_to_s3_when_local_missing(tmp_path: Path):
     objects = {
-        "knowledge/current/manifest.json": {"generated_at": "2026-05-14T00:00:00Z", "counts": {"events": 1}},
+        "knowledge/current/manifest.json": {
+            "generated_at": "2026-05-14T00:00:00Z",
+            "counts": {"events": 1},
+        },
         "knowledge/current/normalized_documents.json": {"documents": []},
         "knowledge/current/events.json": {"events": []},
     }

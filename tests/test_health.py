@@ -31,3 +31,13 @@ def test_internal_knowledge_current_endpoint_returns_summary():
     assert "summary" in body
     assert "file_locations" in body
     assert "payloads" not in body
+
+
+def test_internal_knowledge_domain_inputs_endpoint_returns_agent_slices():
+    client = TestClient(app)
+    response = client.get("/internal/knowledge/domain-inputs")
+    assert response.status_code == 200
+    body = response.json()
+    assert "summary" in body
+    assert "common_events" in body
+    assert {"news", "disclosure", "report", "profit"} <= set(body)

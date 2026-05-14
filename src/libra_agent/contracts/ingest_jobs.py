@@ -73,9 +73,21 @@ DEFAULT_KNOWLEDGE_ARTIFACTS = [
     KnowledgeArtifact(logical_name="manifest", file_name="manifest.json"),
     KnowledgeArtifact(logical_name="normalized_documents", file_name="normalized_documents.json"),
     KnowledgeArtifact(logical_name="events", file_name="events.json"),
-    KnowledgeArtifact(logical_name="push_candidates", file_name="push_candidates.json", required=False),
-    KnowledgeArtifact(logical_name="consensus_snapshot", file_name="consensus_snapshot.json", required=False),
-    KnowledgeArtifact(logical_name="financial_statement", file_name="financial_statement.json", required=False),
+    KnowledgeArtifact(
+        logical_name="push_candidates",
+        file_name="push_candidates.json",
+        required=False,
+    ),
+    KnowledgeArtifact(
+        logical_name="consensus_snapshot",
+        file_name="consensus_snapshot.json",
+        required=False,
+    ),
+    KnowledgeArtifact(
+        logical_name="financial_statement",
+        file_name="financial_statement.json",
+        required=False,
+    ),
 ]
 
 

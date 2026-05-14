@@ -38,7 +38,8 @@ class KnowledgeSnapshot:
         return not self.error and not any(item in REQUIRED_FILES for item in self.missing_files)
 
     def summary(self) -> dict[str, Any]:
-        manifest = self.payloads.get("manifest") if isinstance(self.payloads.get("manifest"), dict) else {}
+        raw_manifest = self.payloads.get("manifest")
+        manifest = raw_manifest if isinstance(raw_manifest, dict) else {}
         counts = manifest.get("counts", {}) if isinstance(manifest, dict) else {}
         return {
             "available": self.available,
@@ -76,7 +77,7 @@ class KnowledgeReader:
         self.aws_region = aws_region
 
     @classmethod
-    def from_settings(cls) -> "KnowledgeReader":
+    def from_settings(cls) -> KnowledgeReader:
         return cls(
             cache_dir=settings.knowledge_cache_dir,
             s3_bucket=settings.s3_bucket,
