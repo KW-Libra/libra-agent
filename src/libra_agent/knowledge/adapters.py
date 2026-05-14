@@ -159,12 +159,18 @@ def _events_for_documents(
         source_documents = event.get("source_documents")
         if not isinstance(source_documents, list):
             continue
-        if any(
-            isinstance(source, Mapping) and str(source.get("doc_id")) in document_ids
-            for source in source_documents
-        ):
+        if any(_source_document_id(source) in document_ids for source in source_documents):
             matched.append(event)
     return matched
+
+
+def _source_document_id(source: Any) -> str | None:
+    if isinstance(source, str):
+        return source
+    if isinstance(source, Mapping):
+        document_id = source.get("doc_id") or source.get("id")
+        return str(document_id) if document_id is not None else None
+    return None
 
 
 def _tickers_from_records(records: Sequence[Mapping[str, Any]]) -> set[str]:

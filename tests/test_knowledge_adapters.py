@@ -24,9 +24,9 @@ def test_build_domain_inputs_splits_documents_and_domain_payloads():
                         "event_id": "event-1",
                         "entities": [{"ticker": "005930"}],
                         "source_documents": [
-                            {"doc_id": "news-1"},
-                            {"doc_id": "disc-1"},
-                            {"doc_id": "report-1"},
+                            "news-1",
+                            "disc-1",
+                            "report-1",
                         ],
                     },
                     {
