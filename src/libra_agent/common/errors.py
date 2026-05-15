@@ -2,6 +2,7 @@
 
 Spring 의 ErrorCode enum 과 이름 동기화. 가능한 한 같은 카탈로그 유지.
 """
+
 from __future__ import annotations
 
 from enum import StrEnum
@@ -66,12 +67,8 @@ async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
     )
 
 
-async def validation_error_handler(
-    request: Request, exc: RequestValidationError
-) -> JSONResponse:
-    detail = "; ".join(
-        f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()
-    )
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    detail = "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
     log.warning("validation_failed", detail=detail, path=request.url.path)
     return JSONResponse(
         status_code=400,

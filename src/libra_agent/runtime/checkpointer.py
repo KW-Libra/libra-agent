@@ -10,6 +10,7 @@ interrupt() resume 시: 같은 thread_id 로 graph.invoke 하면 saver 가
 This stores LangGraph runtime checkpoints only. Business/domain data belongs to
 the backend API and must not be persisted here.
 """
+
 from __future__ import annotations
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -60,9 +61,7 @@ async def close_checkpointer() -> None:
 
 def get_checkpointer() -> AsyncPostgresSaver:
     if _saver is None:
-        raise RuntimeError(
-            "checkpointer not initialized — call init_checkpointer() in lifespan"
-        )
+        raise RuntimeError("checkpointer not initialized — call init_checkpointer() in lifespan")
     return _saver
 
 

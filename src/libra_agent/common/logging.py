@@ -3,6 +3,7 @@
 `LOG_FORMAT=json` 이면 JSON Lines (운영), 아니면 콘솔 (dev).
 traceId 는 ContextVar 에서 자동 추출되어 모든 로그에 박힘.
 """
+
 from __future__ import annotations
 
 import logging
@@ -38,9 +39,7 @@ def configure_logging() -> None:
 
     structlog.configure(
         processors=[*shared_processors, renderer],
-        wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(logging, settings.log_level)
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, settings.log_level)),
         logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
         cache_logger_on_first_use=True,
     )

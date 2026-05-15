@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://libra.local/contracts/push-trigger-event.schema.json",
+  "title": "Push Trigger Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["trigger_type", "headline", "cross_check_count", "severity"],
+  "properties": {
+    "trigger_type": {
+      "type": "string",
+      "default": "news_push"
+    },
+    "headline": {
+      "type": "string",
+      "minLength": 1
+    },
+    "summary": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "ticker": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "company_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "event_time": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cross_check_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "market_reaction": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["watch", "scheduled", "immediate"]
+    }
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "agent_id": "disclosure",
+  "opinion_id": "disclosure_sample_001",
+  "turn_number": 1,
+  "query_understood": "포트폴리오 관련 신규 공시와 실적 신호를 요약한다.",
+  "verdict": "PARTIAL_ANSWER",
+  "evidence": {
+    "found_count": 1,
+    "items": [
+      {
+        "ticker": "005930",
+        "company_name": "삼성전자",
+        "disclosure_type": "earnings",
+        "headline": "분기보고서",
+        "summary": "메모리 업황 회복과 서버 수요 확대가 확인되어 실적 방향은 우호적이다.",
+        "timestamp": "2026-04-02T09:00:00+09:00"
+      }
+    ],
+    "upcoming_disclosures": [
+      {
+        "ticker": "005930",
+        "headline": "실적 발표 예정",
+        "date": "2026-04-30T08:00:00+09:00"
+      }
+    ]
+  },
+  "direction": 0.2,
+  "strength": 0.45,
+  "urgency": "scheduled",
+  "confidence": 0.78,
+  "reasoning_for_judge_agent": "신규 공시는 우호적이지만 시장 반응이 충분히 확인되지 않아 News 확인이 유효하다.",
+  "limits_acknowledged": "공시 해석만으로 최종 투자 판단은 내리지 않는다.",
+  "references": [],
+  "tools_called": [
+    {
+      "tool_name": "local_knowledge.load_documents",
+      "purpose": "Disclosure context",
+      "summary": "Loaded one relevant disclosure document from the normalized cache."
+    }
+  ],
+  "depth_used": "medium",
+  "focus_tickers": [
+    "005930"
+  ]
+}

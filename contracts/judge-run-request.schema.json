@@ -1,0 +1,704 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://libra.local/contracts/judge-run-request.schema.json",
+  "title": "Judge Run Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["query", "portfolio"],
+  "properties": {
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "description": "User instruction or portfolio question for the Judge."
+    },
+    "portfolio": {
+      "$ref": "#/$defs/portfolioSnapshot"
+    },
+    "knowledge_sources": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/knowledgeSources"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional local knowledge source paths or identifiers. Extra keys are preserved as source path metadata."
+    },
+    "knowledge_base": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/knowledgeBase"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional inline knowledge payload passed directly to the runtime graph."
+    },
+    "portfolio_definition": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/portfolioDefinition"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional target-weight portfolio definition for direct-indexing and drift-aware runs."
+    },
+    "governance_v1": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/governanceV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional governance v1 controls. execution_mode=primary opts into the v1 committee runtime."
+    },
+    "depth": {
+      "type": "string",
+      "enum": ["shallow", "medium", "deep"],
+      "default": "medium"
+    },
+    "trigger": {
+      "type": "string",
+      "enum": ["pull", "push"],
+      "default": "pull"
+    },
+    "trigger_event": {
+      "anyOf": [
+        {
+          "$ref": "push-trigger-event.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "deadline_seconds": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional self-imposed time limit for a run."
+    },
+    "thread_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional LangGraph thread id for checkpointed runs."
+    },
+    "enable_human_interrupts": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, the graph may interrupt before final application for human approval."
+    },
+    "approval_required": {
+      "type": "boolean",
+      "default": false,
+      "deprecated": true,
+      "description": "Legacy alias for enable_human_interrupts. Either flag enables the same human review path."
+    }
+  },
+  "$defs": {
+    "sourceValue": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sourcePaths": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/sourceValue"
+      }
+    },
+    "knowledgeSources": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/sourceValue"
+      },
+      "properties": {
+        "events": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Path or identifier for the events payload."
+        },
+        "normalized_documents": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Path or identifier for the normalized documents payload."
+        },
+        "enriched_documents": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional fallback path or identifier for enriched documents."
+        }
+      }
+    },
+    "knowledgeBase": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knowledgeEvent"
+          },
+          "default": []
+        },
+        "documents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knowledgeDocument"
+          },
+          "default": []
+        },
+        "source_paths": {
+          "$ref": "#/$defs/sourcePaths"
+        }
+      }
+    },
+    "knowledgeEvent": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "event_id": {
+          "type": "string"
+        },
+        "event_type": {
+          "type": "string"
+        },
+        "event_time": {
+          "type": "string"
+        },
+        "headline": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "source_documents": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "matched_holdings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knowledgeEntity"
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "knowledgeDocument": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "doc_id": {
+          "type": "string"
+        },
+        "doc_type": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "publisher": {
+          "type": "string"
+        },
+        "source_name": {
+          "type": "string"
+        },
+        "source_url": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "published_at": {
+          "type": "string"
+        },
+        "relevance_score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "event_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "event_type_score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knowledgeEntity"
+          }
+        },
+        "matched_holdings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "knowledgeEntity": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "entity_id": {
+          "type": "string"
+        },
+        "entity_type": {
+          "type": "string"
+        },
+        "entity_name": {
+          "type": "string"
+        },
+        "ticker": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "portfolioDefinition": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "target_weights": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/targetWeight"
+          }
+        },
+        "risk_profile": {
+          "type": "string"
+        },
+        "drift_threshold": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 0.5
+        },
+        "rebalancing_frequency": {
+          "type": "string"
+        },
+        "threshold_overridden": {
+          "type": "boolean"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "profile": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Alternative source for risk_profile, drift_threshold, rebalancing_frequency, and threshold_overridden."
+        }
+      }
+    },
+    "targetWeight": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ticker": {
+          "type": "string"
+        },
+        "company_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "market": {
+          "type": "string"
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "stock": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "ticker": {
+              "type": "string"
+            },
+            "company_name": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "market": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "governanceV1": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "execution_mode": {
+          "type": "string",
+          "description": "Use primary/committee/v1 to run the governance v1 committee as the primary engine; omitted or other values attach governance metadata after the default runtime."
+        },
+        "mode": {
+          "type": "string",
+          "description": "Legacy alias for execution_mode."
+        },
+        "ips": {
+          "$ref": "#/$defs/ipsConfig"
+        },
+        "kyc": {
+          "$ref": "#/$defs/kycProfile"
+        }
+      }
+    },
+    "ipsConfig": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "single_ticker_limit_pct": {
+          "type": "number"
+        },
+        "sector_limit_pct": {
+          "type": "number"
+        },
+        "annual_volatility_limit": {
+          "type": "number"
+        },
+        "asset_class_target": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "asset_class_band_pct": {
+          "type": "number"
+        },
+        "min_cash_pct": {
+          "type": "number"
+        },
+        "max_market_impact_pct_of_adv": {
+          "type": "number"
+        },
+        "excluded_tickers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "excluded_sectors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "esg_min_score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "kycProfile": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "risk_tolerance": {
+          "type": "string"
+        },
+        "investment_horizon_years": {
+          "type": "integer"
+        },
+        "max_drawdown_tolerance_pct": {
+          "type": "number"
+        }
+      }
+    },
+    "portfolioSnapshot": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "generated_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When omitted, the runtime supplies the current timestamp."
+        },
+        "holdings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/portfolioHolding"
+          }
+        },
+        "total_value_krw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cash_weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "user_preferences": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "portfolioHolding": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "ticker": {
+          "type": "string",
+          "minLength": 1
+        },
+        "company_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "description": "Runtime alias for company_name."
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sector": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "esg_score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "carbon_intensity": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shares": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_price": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "average_price": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Average acquisition price per share when provided by the broker."
+        },
+        "market_value_krw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Broker-evaluated holding market value in KRW."
+        },
+        "unrealized_pnl_krw": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Unrealized profit or loss in KRW when provided by the broker."
+        }
+      }
+    }
+  }
+}

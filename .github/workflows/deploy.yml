@@ -34,13 +34,18 @@ jobs:
       - name: Test
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -e ".[dev,domain-agents]"
           pytest
 
       - name: Package
         run: |
           tar \
             --exclude=".venv" \
+            --exclude=".git" \
+            --exclude=".env" \
+            --exclude=".env.prod" \
+            --exclude=".env.local" \
+            --exclude=".env.*.local" \
             --exclude="__pycache__" \
             --exclude="*.pyc" \
             -czf "${RUNNER_TEMP}/libra-agent.tar.gz" .
@@ -72,18 +77,32 @@ jobs:
           {
             "commands": [
               "set -eu",
+              "id libra >/dev/null 2>&1 || { echo 'Missing libra user. Run scripts/ec2-bootstrap.sh on EC2 before deploy.' >&2; exit 2; }",
+              "ENV_FILE=/etc/libra/agent.env; test -r \"$ENV_FILE\" || ENV_FILE=/opt/libra/agent/.env; test -r \"$ENV_FILE\" || { echo 'Missing agent env file. Expected /etc/libra/agent.env or /opt/libra/agent/.env.' >&2; exit 2; }",
+              "grep -Eq '^DATABASE_URL=postgres(ql)?://' \"$ENV_FILE\" || { echo 'DATABASE_URL must be a PostgreSQL URL for the LangGraph checkpointer; do not use LIBRA_DB_* or MySQL.' >&2; exit 2; }",
+              "! grep -Eq '^(DATABASE_URL|ANTHROPIC_API_KEY)=.*(CHANGE_ME|TODO|PLACEHOLDER)' \"$ENV_FILE\" || { echo 'Replace DATABASE_URL/ANTHROPIC_API_KEY placeholders in the agent env file.' >&2; exit 2; }",
+              "grep -Eq '^ANTHROPIC_API_KEY=.' \"$ENV_FILE\" || { echo 'ANTHROPIC_API_KEY is required for anthropic agent deploys.' >&2; exit 2; }",
+              "grep -Eq '^LIBRA_DOMAIN_AGENTS_ENABLED=(true|false)$' \"$ENV_FILE\" || { echo 'Set LIBRA_DOMAIN_AGENTS_ENABLED=true or false in the agent env file.' >&2; exit 2; }",
+              "grep -Eq '^KNOWLEDGE_CACHE_DIR=/' \"$ENV_FILE\" || { echo 'Set KNOWLEDGE_CACHE_DIR to the promoted local knowledge cache path.' >&2; exit 2; }",
               "aws s3 cp s3://${DEPLOY_BUCKET}/deploy-artifacts/agent/${GITHUB_SHA}/libra-agent.tar.gz /tmp/libra-agent.tar.gz",
               "rm -rf /opt/libra/agent/app",
-              "install -d -o libra -g libra -m 0750 /opt/libra/agent/app",
+              "install -d -o libra -g libra -m 0750 /opt/libra/agent /opt/libra/agent/app /opt/libra/knowledge/current",
               "tar -xzf /tmp/libra-agent.tar.gz -C /opt/libra/agent/app",
-              "python3 -m venv /opt/libra/agent/.venv",
+              "command -v python3.12 >/dev/null 2>&1 || { echo 'Python 3.12 is required on EC2. Run scripts/ec2-bootstrap.sh or install python3.12 and python3.12-venv.' >&2; exit 127; }",
+              "python3.12 -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version'",
+              "rm -rf /opt/libra/agent/.venv",
+              "python3.12 -m venv /opt/libra/agent/.venv",
               "/opt/libra/agent/.venv/bin/python -m pip install --upgrade pip setuptools wheel",
-              "/opt/libra/agent/.venv/bin/pip install -e /opt/libra/agent/app",
+              "/opt/libra/agent/.venv/bin/python -m pip install -e '/opt/libra/agent/app[domain-agents]'",
+              "/opt/libra/agent/.venv/bin/python -c \"import google.generativeai\"",
               "chown -R libra:libra /opt/libra/agent/app /opt/libra/agent/.venv",
+              "systemctl daemon-reload",
+              "systemctl enable libra-agent",
               "systemctl restart libra-agent",
-              "sleep 8",
-              "systemctl is-active --quiet libra-agent",
-              "curl -fsS http://127.0.0.1:8000/health"
+              "for i in \$(seq 1 60); do if curl -fsS http://127.0.0.1:8000/health; then exit 0; fi; sleep 3; done",
+              "systemctl status libra-agent --no-pager || true",
+              "journalctl -u libra-agent -n 120 --no-pager",
+              "exit 1"
             ]
           }
           EOF

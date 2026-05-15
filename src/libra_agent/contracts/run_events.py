@@ -4,6 +4,7 @@ This module intentionally contains names and shape-level constants only.
 Domain-specific agent decisions, prompts, report contents, and portfolio rules
 are still undecided and should not live here.
 """
+
 from __future__ import annotations
 
 from enum import StrEnum
@@ -14,6 +15,13 @@ class RunEventType(StrEnum):
     RUN_STARTED = "run_started"
     NODE_STARTED = "node_started"
     NODE_COMPLETED = "node_completed"
+    JUDGE_ACTION = "judge_action"
+    AGENT_STARTED = "agent_started"
+    AGENT_COMPLETED = "agent_completed"
+    AGENT_FAILED = "agent_failed"
+    MEDIATOR_DECISION = "mediator_decision"
+    CONSENSUS_UPDATED = "consensus_updated"
+    FINAL_DECISION_DRAFT = "final_decision_draft"
     INTERRUPT_REQUIRED = "interrupt_required"
     RESUME_RECEIVED = "resume_received"
     RESUME_IGNORED = "resume_ignored"
@@ -33,6 +41,7 @@ RUN_NODE_NAMES: Final[tuple[str, ...]] = (
 
 TERMINAL_EVENT_TYPES: Final[tuple[str, ...]] = (
     RunEventType.INTERRUPT_REQUIRED.value,
+    RunEventType.RESUME_IGNORED.value,
     RunEventType.RUN_COMPLETED.value,
     RunEventType.RUN_FAILED.value,
 )

@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://libra.local/contracts/evaluation-result.schema.json",
+  "title": "Decision Evaluation Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "agent_id",
+    "horizon",
+    "verdict",
+    "direction_accuracy",
+    "magnitude_error",
+    "cost_efficiency",
+    "note",
+    "metrics"
+  ],
+  "properties": {
+    "agent_id": {
+      "const": "evaluation"
+    },
+    "horizon": {
+      "type": "string",
+      "minLength": 1
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "USER_WRONG",
+        "USER_CORRECT",
+        "ACCURATE",
+        "FALSE_POSITIVE",
+        "HOLD_CORRECT",
+        "HOLD_WRONG",
+        "BLOCKED"
+      ]
+    },
+    "direction_accuracy": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "magnitude_error": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cost_efficiency": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "note": {
+      "type": "string"
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

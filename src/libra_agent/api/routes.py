@@ -1,12 +1,13 @@
-"""HTTP / SSE 라우트 — 골격."""
+"""HTTP / SSE routes for the deployed agent API."""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Body
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sse_starlette.sse import EventSourceResponse
 
 from libra_agent.api.sse import resume_and_stream, run_and_stream
@@ -18,27 +19,57 @@ router = APIRouter()
 log = get_logger(__name__)
 
 
-# --- DTO (다음 단계에서 schemas/ 로 옮기고 정식 schema 로 대체) -----------------
-
 class RunStartRequest(BaseModel):
-    """현재 골격용. 다음 단계에서 JudgeRunRequest (contracts 차용 + spec §2) 로 대체."""
+    """Request accepted by the SSE `/api/runs` endpoint.
+
+    `approval_required` is kept as a legacy alias while backend/frontend code
+    moves to the contract field `enable_human_interrupts`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     query: str = Field(..., min_length=1)
-    portfolio: dict[str, Any] | None = None
-    trigger: str = Field(default="pull")
-    thread_id: str | None = None
+    portfolio: dict[str, Any] = Field(...)
+    knowledge_sources: dict[str, Any] | None = None
+    knowledge_base: dict[str, Any] | None = None
+    portfolio_definition: dict[str, Any] | None = None
+    trigger_event: dict[str, Any] | None = None
+    governance_v1: dict[str, Any] | None = None
+    trigger: Literal["pull", "push"] = Field(default="pull")
+    depth: Literal["shallow", "medium", "deep"] = Field(default="medium")
+    deadline_seconds: int | None = Field(default=None, ge=1)
+    thread_id: str | None = Field(default=None, min_length=1)
+    enable_human_interrupts: bool = False
     approval_required: bool = False
+
+    def human_review_enabled(self) -> bool:
+        return bool(self.enable_human_interrupts or self.approval_required)
 
 
 class ResumeRequest(BaseModel):
-    """contracts/user-approval-response.schema.json 차용 — 다음 단계에서 정식 schema 로."""
+    """User approval payload.
+
+    The schema intentionally allows additive client metadata. `option_index`
+    remains for the current UI event contract, while `override_decision` matches
+    the JSON contract.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
     approved: bool
-    decision: str | None = None             # APPROVE / REJECT / REVISE / DEFER
-    option_index: int | None = None         # 0..2 (UDR 3옵션)
+    decision: str | None = None  # APPROVE / REJECT / REVISE / DEFER
+    interrupt_id: str | None = None
+    option_index: int | None = None  # 0..2 (UDR 3옵션)
+    override_decision: str | None = None
     override_plan: dict[str, float] | None = None
     note: str | None = None
+    effective_at: str | None = None
+    responder: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 # --- Routes -----------------------------------------------------------------
+
 
 @router.get("/health")
 async def health() -> dict[str, Any]:

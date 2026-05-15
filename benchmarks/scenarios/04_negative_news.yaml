@@ -1,0 +1,64 @@
+﻿scenario_id: 04_negative_news
+title: 부정 뉴스 발생
+description: 보유 종목에 부정 뉴스가 발생했지만 목표비중 이탈은 크지 않은 상황.
+simulated_date: "2026-05-21"
+profile_id: balanced_kr
+query: 카카오 규제 뉴스가 포트폴리오 리밸런싱 판단에 영향을 주는지 확인해줘.
+trigger: pull
+depth: medium
+portfolio_definition_enabled: false
+portfolio:
+  total_value_krw: 90000000
+  cash_weight: 0.05
+  holdings:
+    - symbol: "005930"
+      current_weight: 0.28
+      target_weight: 0.30
+      shares: 341
+      last_price: 74000
+      average_price: 70000
+    - symbol: "035720"
+      current_weight: 0.18
+      target_weight: 0.15
+      shares: 360
+      last_price: 45000
+      average_price: 52000
+    - symbol: "035420"
+      current_weight: 0.18
+      target_weight: 0.15
+      shares: 67
+      last_price: 242000
+      average_price: 230000
+    - symbol: "105560"
+      current_weight: 0.19
+      target_weight: 0.20
+      shares: 194
+      last_price: 88000
+      average_price: 84000
+    - symbol: "005380"
+      current_weight: 0.12
+      target_weight: 0.15
+      shares: 46
+      last_price: 235000
+      average_price: 226000
+events:
+  - event_type: REGULATION
+    headline: 카카오 플랫폼 수수료 조사 확대
+    summary: 규제 당국이 플랫폼 수수료와 개인정보 처리 이슈를 조사하면서 단기 투자심리가 악화됐다.
+    confidence: 0.84
+    tickers: ["035720"]
+documents:
+  - doc_type: NEWS
+    title: 카카오 규제 리스크 부각
+    body: 플랫폼 규제와 수수료 구조 조사가 확대되며 카카오 주가 변동성이 커졌다.
+    publisher: Naver RSS
+    tickers: ["035720"]
+expected:
+  agents: [news, sentiment, risk]
+  decision: DEFER
+  purpose: drift 기반 룰이 놓치는 시장 정보 반영
+baseline_decisions:
+  buy_hold: HOLD
+  calendar_monthly: HOLD
+  threshold_5pct: HOLD
+  equal_weight_calendar: HOLD

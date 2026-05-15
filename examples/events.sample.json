@@ -1,0 +1,26 @@
+{
+  "events": [
+    {
+      "event_id": "evt_20260410_0001",
+      "event_type": "EARNINGS",
+      "event_time": "2026-04-10T00:00:00Z",
+      "cluster_key": "005930.KS|EARNINGS|2026-04-10",
+      "confidence": 0.97,
+      "headline": "Samsung Electronics posts stronger quarterly guidance on memory recovery",
+      "summary": "Multiple documents point to improving memory pricing and stronger earnings momentum at Samsung Electronics.",
+      "entities": [
+        {
+          "entity_type": "STOCK",
+          "entity_id": "005930.KS",
+          "entity_name": "Samsung Electronics",
+          "ticker": "005930.KS"
+        }
+      ],
+      "source_documents": [
+        "news_0f7d5b60f47892d61bd85f7a",
+        "disclosure_a4f1ce5e909d9657bfb61c16",
+        "report_b7c1dcff9cd53a56976f3490"
+      ]
+    }
+  ]
+}

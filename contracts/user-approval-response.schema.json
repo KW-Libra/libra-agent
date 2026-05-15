@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://libra.local/contracts/user-approval-response.schema.json",
+  "title": "User Approval Response",
+  "type": "object",
+  "required": ["approved"],
+  "properties": {
+    "approved": {
+      "type": "boolean",
+      "description": "Whether the user approved the recommended action."
+    },
+    "decision": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": ["APPROVE", "REJECT", "REVISE", "DEFER"]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "interrupt_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "LangGraph interrupt id echoed from interrupt_required when the client is resuming a specific interrupt."
+    },
+    "option_index": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Selected UI option index. The current human_approval interrupt presents APPROVE/REJECT/REVISE as 0/1/2."
+    },
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Freeform user comment, override instruction, or rationale."
+    },
+    "override_decision": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional replacement final decision. Current runtime decision values include HOLD, DEFER, USER_DECISION_REQUIRED, and REBALANCE."
+    },
+    "override_plan": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": -1,
+            "maximum": 1
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional user-specified rebalance deltas keyed by ticker."
+    },
+    "effective_at": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "responder": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "metadata": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": true
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional client-side metadata for audit or UI state."
+    }
+  },
+  "additionalProperties": true
+}

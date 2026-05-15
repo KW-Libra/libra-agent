@@ -55,9 +55,7 @@ def test_build_domain_inputs_splits_documents_and_domain_payloads():
     assert domain_inputs["news"]["documents"][0]["doc_id"] == "news-1"
     assert domain_inputs["disclosure"]["documents"][0]["doc_id"] == "disc-1"
     assert domain_inputs["report"]["documents"][0]["doc_id"] == "report-1"
-    assert [item["ticker"] for item in domain_inputs["report"]["consensus_snapshots"]] == [
-        "005930"
-    ]
+    assert [item["ticker"] for item in domain_inputs["report"]["consensus_snapshots"]] == ["005930"]
     assert domain_inputs["profit"]["financial_statements"][0]["ticker"] == "005930"
     assert [event["event_id"] for event in domain_inputs["profit"]["events"]] == ["event-1"]
     assert domain_inputs["summary"]["domain_counts"]["news"]["documents"] == 1

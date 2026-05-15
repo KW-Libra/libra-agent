@@ -7,6 +7,7 @@
   - exception handlers (ProblemDetail 응답)
   - routes 등록
 """
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -76,3 +77,10 @@ app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(Exception, unhandled_error_handler)
 
 app.include_router(api_router)
+
+
+def main() -> None:
+    """Console-script entrypoint for the deployed FastAPI app."""
+    import uvicorn
+
+    uvicorn.run("libra_agent.main:app", host=settings.host, port=settings.port)

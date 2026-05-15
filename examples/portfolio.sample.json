@@ -1,0 +1,47 @@
+{
+  "generated_at": "2026-04-14T09:00:00+09:00",
+  "total_value_krw": 100000000,
+  "cash_weight": 0.0,
+  "holdings": [
+    {
+      "ticker": "005930",
+      "company_name": "삼성전자",
+      "weight": 0.4,
+      "aliases": ["Samsung Electronics", "005930.KS", "KRX:005930"],
+      "shares": 100,
+      "last_price": 65000,
+      "average_price": 60000,
+      "market_value_krw": 6500000,
+      "unrealized_pnl_krw": 500000
+    },
+    {
+      "ticker": "000660",
+      "company_name": "SK하이닉스",
+      "weight": 0.25,
+      "aliases": ["SK hynix", "000660.KS", "KRX:000660"],
+      "shares": 50,
+      "last_price": 150000,
+      "average_price": 140000,
+      "market_value_krw": 7500000,
+      "unrealized_pnl_krw": 500000
+    },
+    {
+      "ticker": "005380",
+      "company_name": "현대차",
+      "weight": 0.2,
+      "aliases": ["Hyundai Motor", "005380.KS"]
+    },
+    {
+      "ticker": "105560",
+      "company_name": "KB금융",
+      "weight": 0.15,
+      "aliases": ["KB Financial", "105560.KS"]
+    }
+  ],
+  "user_preferences": [
+    "국내 대형주 중심",
+    "반도체 비중 합계 60~70% 유지 희망",
+    "분기 실적 시즌에는 변동성 감내 가능",
+    "종목 단독 -5% 이상 손실 시 알림"
+  ]
+}

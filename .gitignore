@@ -25,3 +25,7 @@ dist/
 *.parquet
 *.sqlite
 data/cache/
+outputs/*
+!outputs/README.md
+tmp/*
+!tmp/.gitkeep

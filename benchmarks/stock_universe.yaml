@@ -1,0 +1,71 @@
+stocks:
+  - symbol: "005930"
+    name: 삼성전자
+    market: KRX
+    sector: 반도체
+    aliases: ["Samsung Electronics", "005930.KS", "KRX:005930"]
+    esg_score: 78
+    liquidity_tier: high
+  - symbol: "000660"
+    name: SK하이닉스
+    market: KRX
+    sector: 반도체
+    aliases: ["SK hynix", "SK Hynix", "000660.KS", "KRX:000660"]
+    esg_score: 74
+    liquidity_tier: high
+  - symbol: "005380"
+    name: 현대차
+    market: KRX
+    sector: 자동차
+    aliases: ["Hyundai Motor", "005380.KS", "KRX:005380"]
+    esg_score: 72
+    liquidity_tier: high
+  - symbol: "035420"
+    name: NAVER
+    market: KRX
+    sector: 인터넷
+    aliases: ["Naver", "NAVER", "035420.KS", "KRX:035420"]
+    esg_score: 69
+    liquidity_tier: high
+  - symbol: "035720"
+    name: 카카오
+    market: KRX
+    sector: 인터넷
+    aliases: ["Kakao", "035720.KS", "KRX:035720"]
+    esg_score: 58
+    liquidity_tier: high
+  - symbol: "105560"
+    name: KB금융
+    market: KRX
+    sector: 금융
+    aliases: ["KB Financial", "105560.KS", "KRX:105560"]
+    esg_score: 76
+    liquidity_tier: high
+  - symbol: "055550"
+    name: 신한지주
+    market: KRX
+    sector: 금융
+    aliases: ["Shinhan Financial", "055550.KS", "KRX:055550"]
+    esg_score: 77
+    liquidity_tier: high
+  - symbol: "051910"
+    name: LG화학
+    market: KRX
+    sector: 소재/배터리
+    aliases: ["LG Chem", "051910.KS", "KRX:051910"]
+    esg_score: 66
+    liquidity_tier: high
+  - symbol: "207940"
+    name: 삼성바이오로직스
+    market: KRX
+    sector: 바이오
+    aliases: ["Samsung Biologics", "207940.KS", "KRX:207940"]
+    esg_score: 81
+    liquidity_tier: high
+  - symbol: "012330"
+    name: 현대모비스
+    market: KRX
+    sector: 자동차부품
+    aliases: ["Hyundai Mobis", "012330.KS", "KRX:012330"]
+    esg_score: 73
+    liquidity_tier: medium

@@ -6,6 +6,7 @@ context manager *없이* 사용해 lifespan 우회 → routes 만 검증.
 
 본격 통합 테스트는 다음 단계에서 Testcontainers 도입 시 별도 클래스로.
 """
+
 from __future__ import annotations
 
 from fastapi.testclient import TestClient

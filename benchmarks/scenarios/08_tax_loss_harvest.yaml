@@ -1,0 +1,59 @@
+﻿scenario_id: 08_tax_loss_harvest
+title: 손실실현/세금 검토
+description: 손실 상태의 종목을 매도 후보로 포함할 수 있어 세금 관점 검토가 필요한 상황.
+simulated_date: "2026-05-31"
+profile_id: balanced_kr
+query: 손실 종목을 포함한 리밸런싱 초안의 세금 효과까지 검토해줘.
+trigger: pull
+depth: deep
+portfolio_definition_enabled: true
+portfolio:
+  total_value_krw: 110000000
+  cash_weight: 0.04
+  holdings:
+    - symbol: "035720"
+      current_weight: 0.26
+      target_weight: 0.12
+      shares: 635
+      last_price: 45000
+      average_price: 62000
+    - symbol: "035420"
+      current_weight: 0.22
+      target_weight: 0.15
+      shares: 100
+      last_price: 242000
+      average_price: 260000
+    - symbol: "005930"
+      current_weight: 0.24
+      target_weight: 0.28
+      shares: 357
+      last_price: 74000
+      average_price: 70000
+    - symbol: "105560"
+      current_weight: 0.14
+      target_weight: 0.20
+      shares: 175
+      last_price: 88000
+      average_price: 85000
+    - symbol: "207940"
+      current_weight: 0.10
+      target_weight: 0.21
+      shares: 13
+      last_price: 830000
+      average_price: 800000
+events:
+  - event_type: LEGAL
+    headline: 카카오 플랫폼 규제와 실적 둔화 우려 지속
+    summary: 손실 상태인 인터넷 플랫폼 종목 축소 시 세금효과와 포트폴리오 개선 효과를 함께 봐야 한다.
+    confidence: 0.78
+    tickers: ["035720", "035420"]
+documents: []
+expected:
+  agents: [profit, cost, tax]
+  decision: USER_DECISION_REQUIRED
+  purpose: baseline이 모르는 세금 관점 확인
+baseline_decisions:
+  buy_hold: HOLD
+  calendar_monthly: REBALANCE
+  threshold_5pct: REBALANCE
+  equal_weight_calendar: REBALANCE

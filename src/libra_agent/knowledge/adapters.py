@@ -134,18 +134,12 @@ def _list_from_payload(payload: Any, key: str) -> list[dict[str, Any]]:
 
 def _documents_by_type(documents: Sequence[dict[str, Any]], doc_type: str) -> list[dict[str, Any]]:
     return [
-        document
-        for document in documents
-        if str(document.get("doc_type", "")).upper() == doc_type
+        document for document in documents if str(document.get("doc_type", "")).upper() == doc_type
     ]
 
 
 def _document_ids(documents: Iterable[Mapping[str, Any]]) -> set[str]:
-    return {
-        str(document["doc_id"])
-        for document in documents
-        if document.get("doc_id") is not None
-    }
+    return {str(document["doc_id"]) for document in documents if document.get("doc_id") is not None}
 
 
 def _events_for_documents(
@@ -210,9 +204,7 @@ def _records_for_tickers(
     if not tickers:
         return list(records)
     return [
-        record
-        for record in records
-        if str(record.get("ticker") or record.get("symbol")) in tickers
+        record for record in records if str(record.get("ticker") or record.get("symbol")) in tickers
     ]
 
 

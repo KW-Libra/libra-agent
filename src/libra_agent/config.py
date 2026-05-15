@@ -1,4 +1,5 @@
 """환경변수 → 설정 매핑. pydantic-settings."""
+
 from __future__ import annotations
 
 from typing import Literal
