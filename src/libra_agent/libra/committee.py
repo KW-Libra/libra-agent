@@ -4,12 +4,18 @@ import json
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from typing import Any
 
 from libra_agent.errors import ChatClientError
 from libra_agent.libra_models import AgentResponse, PortfolioSnapshot
-from libra_agent.runtime.debate_events import publish_debate_event
+from libra_agent.runtime.debate_events import (
+    publish_debate_event,
+    publish_llm_error,
+    publish_llm_prompt,
+    publish_llm_response,
+)
 
 from .compliance import build_compliance_context_from_portfolio, default_compliance_engine
 from .judge.final import compute_tentative_trades, render_rule_based_final_decision
@@ -398,6 +404,8 @@ class CommitteeRuntime:
                 tool_description="Round 1 consensus를 검토하고 Round 2 표적 재호출 여부를 제출합니다.",
                 input_schema=_mediator_decision_schema(candidate_targets),
                 temperature=0.0,
+                actor="mediator",
+                phase="round2_target_selection",
             )
         except ChatClientError:
             raise
@@ -427,7 +435,7 @@ def run_agent_callables_parallel(
     results: dict[str, AgentResponse] = {}
     with ThreadPoolExecutor(max_workers=worker_count) as pool:
         future_to_agent = {
-            pool.submit(_run_agent_call_with_events, agent_id, call): agent_id
+            pool.submit(copy_context().run, _run_agent_call_with_events, agent_id, call): agent_id
             for agent_id, call in agent_calls.items()
         }
         for future in as_completed(future_to_agent):
@@ -589,6 +597,8 @@ def _fill_final_decision_with_llm(
             tool_description="코드가 잠근 최종 branch에 맞춰 사용자 설명과 선택지를 제출합니다.",
             input_schema=_final_judge_fill_schema(),
             temperature=0.0,
+            actor="final_judge",
+            phase="final_explanation",
         )
     except ChatClientError:
         raise
@@ -659,21 +669,64 @@ def _chat_json_strict(
     tool_description: str,
     input_schema: dict[str, Any],
     temperature: float,
+    actor: str = "judge",
+    phase: str = "tool_call",
 ) -> dict[str, Any]:
-    if hasattr(client, "chat_json_tool"):
-        return client.chat_json_tool(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            tool_name=tool_name,
-            tool_description=tool_description,
-            input_schema=input_schema,
-            temperature=temperature,
-        )
-    return client.chat_json(
+    model = str(getattr(client, "model", "unknown"))
+    publish_llm_prompt(
+        actor=actor,
+        phase=phase,
+        model=model,
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         temperature=temperature,
+        tool_name=tool_name,
+        tool_description=tool_description,
+        input_schema=input_schema,
     )
+    if hasattr(client, "chat_json_tool"):
+        try:
+            response = client.chat_json_tool(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                tool_name=tool_name,
+                tool_description=tool_description,
+                input_schema=input_schema,
+                temperature=temperature,
+            )
+        except Exception as exc:
+            publish_llm_error(
+                actor=actor,
+                phase=phase,
+                model=model,
+                error=exc,
+                tool_name=tool_name,
+            )
+            raise
+    else:
+        try:
+            response = client.chat_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+            )
+        except Exception as exc:
+            publish_llm_error(
+                actor=actor,
+                phase=phase,
+                model=model,
+                error=exc,
+                tool_name=tool_name,
+            )
+            raise
+    publish_llm_response(
+        actor=actor,
+        phase=phase,
+        model=model,
+        output=response,
+        tool_name=tool_name,
+    )
+    return response
 
 
 def _mediator_decision_schema(candidate_targets: list[str]) -> dict[str, Any]:

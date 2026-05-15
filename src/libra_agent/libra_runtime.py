@@ -10,7 +10,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from libra_agent.runtime.debate_events import publish_debate_event
+from libra_agent.runtime.debate_events import (
+    publish_debate_event,
+    publish_llm_error,
+    publish_llm_prompt,
+    publish_llm_response,
+    publish_llm_skipped,
+    publish_tool_observation,
+)
 
 from .libra.constraints import default_constraints_for, validate_rebalance_plan
 from .libra.direct_indexing import (
@@ -920,9 +927,26 @@ class LLMAgent:
             depth=depth,
         )
         knowledge_slice = tool_loop.knowledge_slice
+        publish_tool_observation(
+            actor=self.agent_id,
+            phase="agent_tool_loop",
+            tools=knowledge_slice.tools_called,
+        )
         opinion_id = f"{self.agent_id}_{stable_hash({'agent': self.agent_id, 'turn': turn_number, 'query': query})[:12]}"
 
         if not knowledge_slice.events and not knowledge_slice.documents:
+            publish_llm_skipped(
+                actor=self.agent_id,
+                phase="agent_response",
+                reason="이 에이전트가 판단할 관련 로컬 근거가 없어 LLM 호출을 생략했습니다.",
+                context={
+                    "query": query,
+                    "depth": depth,
+                    "stop_reason": tool_loop.stop_reason,
+                    "events": 0,
+                    "documents": 0,
+                },
+            )
             verdict = (
                 AgentVerdict.QUIET
                 if self.agent_id == "news"
@@ -968,10 +992,24 @@ class LLMAgent:
             turn_number=turn_number,
         )
         try:
+            publish_llm_prompt(
+                actor=self.agent_id,
+                phase="agent_response",
+                model=str(getattr(self.client, "model", "unknown")),
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.0,
+            )
             raw_response = self.client.chat_json(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=0.0,
+            )
+            publish_llm_response(
+                actor=self.agent_id,
+                phase="agent_response",
+                model=str(getattr(self.client, "model", "unknown")),
+                output=raw_response,
             )
             response = self._normalize_llm_response(
                 raw_response,
@@ -983,6 +1021,12 @@ class LLMAgent:
                 depth=depth,
             )
         except (ChatClientError, ValueError, TypeError) as exc:
+            publish_llm_error(
+                actor=self.agent_id,
+                phase="agent_response",
+                model=str(getattr(self.client, "model", "unknown")),
+                error=exc,
+            )
             raise ChatClientError(
                 f"{self.agent_id} agent LLM failed; local deterministic response fallback is disabled."
             ) from exc
@@ -1093,12 +1137,40 @@ class LLMAgent:
             ],
             "original_task": original_user_prompt,
         }
-        return self.client.chat_json(
-            system_prompt=self._system_prompt()
-            + " The previous JSON failed validation. Repair it without changing the supplied evidence.",
-            user_prompt=json.dumps(repair_payload, ensure_ascii=False, separators=(",", ":")),
+        system_prompt = (
+            self._system_prompt()
+            + " The previous JSON failed validation. Repair it without changing the supplied evidence."
+        )
+        user_prompt = json.dumps(repair_payload, ensure_ascii=False, separators=(",", ":"))
+        publish_llm_prompt(
+            actor=self.agent_id,
+            phase="agent_response_repair",
+            model=str(getattr(self.client, "model", "unknown")),
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
             temperature=0.0,
         )
+        try:
+            response = self.client.chat_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.0,
+            )
+        except (ChatClientError, ValueError, TypeError) as exc:
+            publish_llm_error(
+                actor=self.agent_id,
+                phase="agent_response_repair",
+                model=str(getattr(self.client, "model", "unknown")),
+                error=exc,
+            )
+            raise
+        publish_llm_response(
+            actor=self.agent_id,
+            phase="agent_response_repair",
+            model=str(getattr(self.client, "model", "unknown")),
+            output=response,
+        )
+        return response
 
     def _run_tool_loop(
         self,
@@ -1456,15 +1528,41 @@ class CoreChatDomainRouter:
                 "rationale, containing the answer text."
             ),
         }
-        response = self.client.chat_json(
-            system_prompt=(
-                "You are a LIBRA domain-agent LLM adapter. "
-                "Follow domain_system_prompt and domain_user_prompt, but return only "
-                'one JSON object: {"rationale":"..."}. '
-                "Write rationale in Korean unless the domain prompt explicitly asks otherwise."
-            ),
-            user_prompt=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        system_prompt = (
+            "You are a LIBRA domain-agent LLM adapter. "
+            "Follow domain_system_prompt and domain_user_prompt, but return only "
+            'one JSON object: {"rationale":"..."}. '
+            "Write rationale in Korean unless the domain prompt explicitly asks otherwise."
+        )
+        user_prompt = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        model_name = self.model_name_for(agent_id)
+        publish_llm_prompt(
+            actor=agent_id,
+            phase="domain_agent_response",
+            model=model_name,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
             temperature=0.0,
+        )
+        try:
+            response = self.client.chat_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.0,
+            )
+        except Exception as exc:
+            publish_llm_error(
+                actor=agent_id,
+                phase="domain_agent_response",
+                model=model_name,
+                error=exc,
+            )
+            raise
+        publish_llm_response(
+            actor=agent_id,
+            phase="domain_agent_response",
+            model=model_name,
+            output=response,
         )
         rationale = response.get("rationale") or response.get("answer") or response.get("summary")
         if isinstance(rationale, str) and rationale.strip():
@@ -2119,16 +2217,37 @@ class JudgeOrchestrator:
             },
         }
         system_prompt = JUDGE_ACTION_SYSTEM_PROMPT
+        user_prompt = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        publish_llm_prompt(
+            actor="judge",
+            phase="core_routing",
+            model=str(getattr(self.client, "model", "unknown")),
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=0.0,
+        )
         try:
             raw = self.client.chat_json(
                 system_prompt=system_prompt,
-                user_prompt=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                user_prompt=user_prompt,
                 temperature=0.0,
             )
         except ChatClientError as exc:
+            publish_llm_error(
+                actor="judge",
+                phase="core_routing",
+                model=str(getattr(self.client, "model", "unknown")),
+                error=exc,
+            )
             raise ChatClientError(
                 "Judge routing LLM failed; deterministic routing fallback is disabled."
             ) from exc
+        publish_llm_response(
+            actor="judge",
+            phase="core_routing",
+            model=str(getattr(self.client, "model", "unknown")),
+            output=raw,
+        )
         normalized = self._normalize_judge_action(
             raw,
             query=query,
@@ -2212,17 +2331,42 @@ class JudgeOrchestrator:
             ],
             "state": context_payload,
         }
+        system_prompt = (
+            JUDGE_ACTION_SYSTEM_PROMPT
+            + " The previous JSON was rejected by the validator; repair it into a valid safe action."
+        )
+        user_prompt = json.dumps(repair_payload, ensure_ascii=False, separators=(",", ":"))
+        publish_llm_prompt(
+            actor="judge",
+            phase="core_routing_repair",
+            model=str(getattr(self.client, "model", "unknown")),
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=0.0,
+        )
         try:
-            return self.client.chat_json(
-                system_prompt=JUDGE_ACTION_SYSTEM_PROMPT
-                + " The previous JSON was rejected by the validator; repair it into a valid safe action.",
-                user_prompt=json.dumps(repair_payload, ensure_ascii=False, separators=(",", ":")),
+            response = self.client.chat_json(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
                 temperature=0.0,
             )
         except ChatClientError as exc:
+            publish_llm_error(
+                actor="judge",
+                phase="core_routing_repair",
+                model=str(getattr(self.client, "model", "unknown")),
+                error=exc,
+            )
             raise ChatClientError(
                 "Judge routing LLM repair failed; deterministic routing fallback is disabled."
             ) from exc
+        publish_llm_response(
+            actor="judge",
+            phase="core_routing_repair",
+            model=str(getattr(self.client, "model", "unknown")),
+            output=response,
+        )
+        return response
 
     def _judge_action_rejection_detail(
         self,
@@ -2312,16 +2456,38 @@ class JudgeOrchestrator:
                 ],
             },
         }
+        system_prompt = JUDGE_DOMAIN_ACTION_SYSTEM_PROMPT
+        user_prompt = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        publish_llm_prompt(
+            actor="judge",
+            phase="domain_routing",
+            model=str(getattr(self.client, "model", "unknown")),
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=0.0,
+        )
         try:
             raw = self.client.chat_json(
-                system_prompt=JUDGE_DOMAIN_ACTION_SYSTEM_PROMPT,
-                user_prompt=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
                 temperature=0.0,
             )
         except ChatClientError as exc:
+            publish_llm_error(
+                actor="judge",
+                phase="domain_routing",
+                model=str(getattr(self.client, "model", "unknown")),
+                error=exc,
+            )
             raise ChatClientError(
                 "Domain council routing LLM failed; deterministic routing fallback is disabled."
             ) from exc
+        publish_llm_response(
+            actor="judge",
+            phase="domain_routing",
+            model=str(getattr(self.client, "model", "unknown")),
+            output=raw,
+        )
         normalized = self._normalize_domain_action(
             raw,
             query=query,
@@ -3101,6 +3267,14 @@ class JudgeOrchestrator:
             separators=(",", ":"),
         )
         system_prompt = JUDGE_PHASE_SYSTEM_PROMPT
+        publish_llm_prompt(
+            actor="judge",
+            phase=f"final_decision_{stage}",
+            model=str(getattr(self.client, "model", "unknown")),
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            temperature=0.0,
+        )
         try:
             payload = self.client.chat_json(
                 system_prompt=system_prompt,
@@ -3108,9 +3282,21 @@ class JudgeOrchestrator:
                 temperature=0.0,
             )
         except ChatClientError as exc:
+            publish_llm_error(
+                actor="judge",
+                phase=f"final_decision_{stage}",
+                model=str(getattr(self.client, "model", "unknown")),
+                error=exc,
+            )
             raise ChatClientError(
                 "Judge final-decision LLM failed; deterministic decision fallback is disabled."
             ) from exc
+        publish_llm_response(
+            actor="judge",
+            phase=f"final_decision_{stage}",
+            model=str(getattr(self.client, "model", "unknown")),
+            output=payload,
+        )
         payload = sanitize_judge_payload(payload, portfolio=portfolio, stage=stage)
         if self._is_low_signal_judge_payload(
             payload

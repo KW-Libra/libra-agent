@@ -16,6 +16,7 @@ design_spec_v1.md §1.1 mermaid 흐름:
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Mapping
 from contextlib import ExitStack
 from datetime import UTC, datetime
@@ -32,6 +33,7 @@ from libra_agent.libra.llm_clients import open_chat_client
 from libra_agent.libra_models import PortfolioSnapshot, TriggerEvent
 from libra_agent.libra_runtime import JudgeOrchestrator, LocalKnowledgeBase
 from libra_agent.runtime.checkpointer import get_checkpointer
+from libra_agent.runtime.debate_events import publish_llm_skipped
 
 log = get_logger(__name__)
 
@@ -147,6 +149,26 @@ async def _node_final_judge(state: GraphState) -> dict[str, Any]:
             "final_decision": decision,
         }
 
+    portfolio_payload = state.get("portfolio")
+    holdings = (
+        portfolio_payload.get("holdings", [])
+        if isinstance(portfolio_payload, Mapping)
+        and isinstance(portfolio_payload.get("holdings"), list)
+        else []
+    )
+    publish_llm_skipped(
+        actor="judge",
+        phase="final_judge",
+        reason=(
+            "보유 종목 또는 포트폴리오 정의가 없고 현재 실행 환경에서 LLM 백엔드가 구성되지 않아 "
+            "agent core를 실행하지 않았습니다."
+        ),
+        context={
+            "has_portfolio": isinstance(portfolio_payload, Mapping),
+            "holdings_count": len(holdings),
+            "has_portfolio_definition": isinstance(state.get("portfolio_definition"), Mapping),
+        },
+    )
     return {
         "compliance_after": {"can_proceed": True, "violations": [], "state": "AFTER"},
         "final_decision": {
@@ -212,9 +234,18 @@ def _has_portfolio_holdings(value: Any) -> bool:
 
 
 def _should_run_agent_core(state: GraphState) -> bool:
-    return _has_portfolio_holdings(state.get("portfolio")) or isinstance(
-        state.get("portfolio_definition"),
-        Mapping,
+    if _has_portfolio_holdings(state.get("portfolio")) or isinstance(
+        state.get("portfolio_definition"), Mapping
+    ):
+        return True
+    return isinstance(state.get("portfolio"), Mapping) and _llm_backend_configured()
+
+
+def _llm_backend_configured() -> bool:
+    return bool(
+        os.environ.get("ANTHROPIC_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("LIBRA_LLM_PROVIDER") in {"ollama", "llama_cpp"}
     )
 
 

@@ -32,6 +32,12 @@ import time
 from enum import StrEnum
 from typing import Any
 
+from libra_agent.runtime.debate_events import (
+    publish_llm_error,
+    publish_llm_prompt,
+    publish_llm_response,
+)
+
 logger = logging.getLogger(__name__)
 
 # ── LLM 모델 열거형 ────────────────────────────────────────────
@@ -184,9 +190,33 @@ class LLMRouter:
             cross_validate: True이면 Gemini + Claude 모두 호출 후 합의 (할루시네이션 방지)
         """
         model = self._select_model(agent_id)
-        logger.debug(f"[LLMRouter] {agent_id} → {self._model_name(model)}")
+        model_name = self._model_name(model)
+        logger.debug(f"[LLMRouter] {agent_id} → {model_name}")
 
-        primary = self._call_model(model, system, user, max_tokens)
+        publish_llm_prompt(
+            actor=agent_id,
+            phase="domain_router_primary",
+            model=model_name,
+            system_prompt=system,
+            user_prompt=user,
+            temperature=None,
+        )
+        try:
+            primary = self._call_model(model, system, user, max_tokens)
+        except Exception as exc:
+            publish_llm_error(
+                actor=agent_id,
+                phase="domain_router_primary",
+                model=model_name,
+                error=exc,
+            )
+            raise
+        publish_llm_response(
+            actor=agent_id,
+            phase="domain_router_primary",
+            model=model_name,
+            output=primary,
+        )
 
         # 크로스 검증: 주요 에이전트 or 명시 요청시 Gemini↔Claude 교차 확인
         if (
@@ -201,7 +231,31 @@ class LLMRouter:
                 if model in (LLMModel.GEMINI_FLASH, LLMModel.GEMINI_PRO)
                 else LLMModel.GEMINI_FLASH
             )
-            secondary = self._call_model(secondary_model, system, user, max_tokens)
+            secondary_model_name = self._model_name(secondary_model)
+            publish_llm_prompt(
+                actor=agent_id,
+                phase="domain_router_cross_validate",
+                model=secondary_model_name,
+                system_prompt=system,
+                user_prompt=user,
+                temperature=None,
+            )
+            try:
+                secondary = self._call_model(secondary_model, system, user, max_tokens)
+            except Exception as exc:
+                publish_llm_error(
+                    actor=agent_id,
+                    phase="domain_router_cross_validate",
+                    model=secondary_model_name,
+                    error=exc,
+                )
+                raise
+            publish_llm_response(
+                actor=agent_id,
+                phase="domain_router_cross_validate",
+                model=secondary_model_name,
+                output=secondary,
+            )
             return self._merge_responses(
                 primary,
                 secondary,
