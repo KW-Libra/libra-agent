@@ -3351,13 +3351,13 @@ class JudgeOrchestrator:
             raise ChatClientError(
                 "Judge final-decision LLM failed; deterministic decision fallback is disabled."
             ) from exc
+        payload = sanitize_judge_payload(payload, portfolio=portfolio, stage=stage)
         publish_llm_response(
             actor="judge",
             phase=f"final_decision_{stage}",
             model=str(getattr(self.client, "model", "unknown")),
             output=payload,
         )
-        payload = sanitize_judge_payload(payload, portfolio=portfolio, stage=stage)
         if self._is_low_signal_judge_payload(
             payload
         ) or self._judge_payload_has_unsupported_language(payload):

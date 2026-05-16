@@ -580,12 +580,17 @@ def sanitize_judge_payload(
         decision = DecisionType(raw_decision)
     else:
         decision = DecisionType.REBALANCE if candidate_plan else DecisionType.DEFER
+    empty_portfolio_no_trade = stage == "final" and not portfolio.holdings and not candidate_plan
+    if empty_portfolio_no_trade:
+        decision = DecisionType.DEFER
 
     raw_urgency = _clean_text(raw.get("urgency"), limit=20)
     if raw_urgency in {item.value for item in Urgency}:
         urgency = Urgency(raw_urgency)
     else:
         urgency = _default_urgency_for_decision(decision)
+    if empty_portfolio_no_trade:
+        urgency = Urgency.DEFER
 
     summary = _clean_text(
         raw.get("summary"), default=_default_summary_for_decision(decision), limit=320
@@ -597,6 +602,8 @@ def sanitize_judge_payload(
         or decision == DecisionType.REBALANCE
         or _as_bool(raw.get("needs_trade_evaluation"), default=False)
     )
+    if empty_portfolio_no_trade:
+        needs_trade_evaluation = False
 
     notification = _as_mapping(raw.get("user_notification"))
     level = _clean_text(notification.get("level"), limit=20).lower()
@@ -606,6 +613,9 @@ def sanitize_judge_payload(
         notification.get("action_required"),
         default=decision == DecisionType.USER_DECISION_REQUIRED,
     )
+    if empty_portfolio_no_trade:
+        level = "info"
+        action_required = False
     user_notification = {
         "level": level,
         "body": summary,
@@ -621,6 +631,8 @@ def sanitize_judge_payload(
         cleaned = _clean_text(item, limit=80)
         if cleaned and cleaned not in options:
             options.append(cleaned)
+    if empty_portfolio_no_trade:
+        options = []
     if decision == DecisionType.USER_DECISION_REQUIRED and not options:
         options = ["권고안 승인", "유지", "직접 판단"]
 
@@ -633,7 +645,9 @@ def sanitize_judge_payload(
         "candidate_rebalance_plan": candidate_plan,
         "needs_trade_evaluation": needs_trade_evaluation,
         "follow_up_at": _datetime_string(raw.get("follow_up_at")),
-        "feedback_checkpoint": _datetime_string(raw.get("feedback_checkpoint")),
+        "feedback_checkpoint": None
+        if empty_portfolio_no_trade
+        else _datetime_string(raw.get("feedback_checkpoint")),
         "user_notification": user_notification,
         "options": options,
         "auto_safeguards": _sanitize_jsonish(raw.get("auto_safeguards"), max_depth=3) or {},

@@ -7,6 +7,7 @@ from libra_agent.libra.prompts import DISCLOSURE_PROMPT_PROFILE
 from libra_agent.libra_models import AgentVerdict, PortfolioSnapshot, Urgency
 from libra_agent.libra_runtime import JudgeOrchestrator, LLMAgent, LocalKnowledgeBase
 from libra_agent.libra_validation import sanitize_judge_payload
+from libra_agent.runtime.debate_events import debate_event_publisher
 
 
 class FakeChatClient:
@@ -32,6 +33,18 @@ def _portfolio() -> PortfolioSnapshot:
             ],
             "cash_weight": 0.0,
             "user_preferences": ["국내 대형주 중심"],
+        }
+    )
+
+
+def _empty_portfolio() -> PortfolioSnapshot:
+    return PortfolioSnapshot.from_dict(
+        {
+            "generated_at": "2026-05-16T12:00:00+09:00",
+            "holdings": [],
+            "total_value_krw": 30_000_000,
+            "cash_weight": 1.0,
+            "user_preferences": ["모의투자 기준", "리스크 우선"],
         }
     )
 
@@ -204,6 +217,75 @@ class LibraSchemaValidationTests(unittest.TestCase):
         self.assertEqual(payload["user_notification"]["level"], "info")
         self.assertEqual(payload["user_notification"]["body"], payload["summary"])
         self.assertEqual(payload["options"], ["1", "권고안 승인"])
+
+    def test_judge_payload_sanitizer_demotes_empty_portfolio_user_decision(self) -> None:
+        payload = sanitize_judge_payload(
+            {
+                "decision": "USER_DECISION_REQUIRED",
+                "summary": "초기 포트폴리오 후보가 필요합니다.",
+                "confidence": 0.95,
+                "urgency": "watch",
+                "reasoning": "보유 종목과 후보 리밸런싱 초안이 없습니다.",
+                "candidate_rebalance_plan": {},
+                "needs_trade_evaluation": True,
+                "feedback_checkpoint": "2026-05-17T09:00:00+09:00",
+                "user_notification": {
+                    "level": "push",
+                    "body": "승인이 필요합니다.",
+                    "action_required": True,
+                },
+                "options": ["승인", "거절"],
+            },
+            portfolio=_empty_portfolio(),
+            stage="final",
+        )
+
+        self.assertEqual(payload["decision"], "DEFER")
+        self.assertEqual(payload["urgency"], "defer")
+        self.assertEqual(payload["candidate_rebalance_plan"], {})
+        self.assertFalse(payload["needs_trade_evaluation"])
+        self.assertIsNone(payload["feedback_checkpoint"])
+        self.assertEqual(payload["user_notification"]["level"], "info")
+        self.assertFalse(payload["user_notification"]["action_required"])
+        self.assertEqual(payload["options"], [])
+
+    def test_judge_phase_publishes_sanitized_empty_portfolio_decision(self) -> None:
+        events: list[tuple[str, dict[str, object]]] = []
+        token = debate_event_publisher.set(lambda event, payload: events.append((event, payload)))
+        try:
+            payload = JudgeOrchestrator(
+                client=FakeChatClient(
+                    {
+                        "decision": "USER_DECISION_REQUIRED",
+                        "summary": "초기 포트폴리오 후보가 필요합니다.",
+                        "confidence": 0.95,
+                        "urgency": "watch",
+                        "reasoning": "보유 종목과 후보 리밸런싱 초안이 없습니다.",
+                        "candidate_rebalance_plan": {},
+                        "needs_trade_evaluation": False,
+                        "user_notification": {"level": "push", "action_required": True},
+                    }
+                )
+            )._judge_phase(
+                query="현재 포트폴리오를 점검해줘.",
+                portfolio=_empty_portfolio(),
+                responses=[],
+                stage="final",
+                candidate_plan={},
+            )
+        finally:
+            debate_event_publisher.reset(token)
+
+        self.assertEqual(payload["decision"], "DEFER")
+        response_events = [
+            item
+            for item in events
+            if item[0] == "llm_response" and item[1].get("phase") == "final_decision_final"
+        ]
+        self.assertTrue(response_events)
+        output = response_events[-1][1]["output"]
+        self.assertIsInstance(output, dict)
+        self.assertEqual(output["decision"], "DEFER")
 
     def test_empty_local_context_uses_consistent_empty_schema(self) -> None:
         empty_knowledge = LocalKnowledgeBase.from_state_payload(
