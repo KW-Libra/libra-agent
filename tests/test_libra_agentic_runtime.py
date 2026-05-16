@@ -828,6 +828,58 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
         self.assertEqual(len(knowledge_base.events), 1)
         self.assertEqual(knowledge_base.events[0].event_id, "evt_1")
 
+    def test_local_knowledge_base_matches_normalized_document_entities(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            documents_path = Path(tmp_dir) / "normalized_documents.json"
+            documents_path.write_text(
+                json.dumps(
+                    {
+                        "documents": [
+                            {
+                                "doc_id": "report_1",
+                                "doc_type": "REPORT",
+                                "source_info": {
+                                    "publisher": "증권사",
+                                    "source_name": "Hankyung Consensus",
+                                    "source_url": "https://example.test/report.pdf",
+                                    "region": "KR",
+                                },
+                                "normalized_content": {
+                                    "title": "상상인 Macro Daily",
+                                    "body": "반도체 업황과 수급을 점검합니다.",
+                                },
+                                "timing_info": {
+                                    "published_at": "2026-05-15T00:00:00+09:00",
+                                },
+                                "entities": [
+                                    {
+                                        "entity_type": "STOCK",
+                                        "entity_id": "005930",
+                                        "entity_name": "삼성전자",
+                                        "ticker": "005930",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            knowledge_base = LocalKnowledgeBase.from_files(
+                normalized_documents_path=documents_path
+            )
+
+        slice_ = knowledge_base.slice_for_agent(
+            agent_id="report",
+            portfolio=_portfolio(),
+            query="삼성전자 리포트 확인",
+            depth="shallow",
+        )
+        self.assertEqual(len(slice_.documents), 1)
+        self.assertEqual(slice_.documents[0].matched_holdings, ("005930",))
+
 
 if __name__ == "__main__":
     unittest.main()

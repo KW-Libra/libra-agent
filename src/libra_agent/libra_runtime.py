@@ -670,8 +670,10 @@ class LocalKnowledgeBase:
             source_url=str(source_info.get("source_url", "")),
             region=str(source_info.get("region", "")),
             published_at=coerce_datetime(str(timing_info.get("published_at", "")) or None),
-            entities=(),
-            metadata={},
+            entities=cls._entities_from_payload(payload.get("entities")),
+            metadata=dict(payload.get("metadata", {}))
+            if isinstance(payload.get("metadata"), Mapping)
+            else {},
         )
 
     @classmethod
