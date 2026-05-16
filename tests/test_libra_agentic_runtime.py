@@ -910,6 +910,114 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
         self.assertEqual(len(slice_.documents), 1)
         self.assertEqual(slice_.documents[0].matched_holdings, ("005930",))
 
+    def test_empty_portfolio_uses_market_wide_knowledge_slice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            events_path = Path(tmp_dir) / "events.json"
+            documents_path = Path(tmp_dir) / "normalized_documents.json"
+            events_path.write_text(
+                json.dumps(
+                    {
+                        "events": [
+                            {
+                                "event_id": "evt_disclosure",
+                                "event_type": "EARNINGS",
+                                "event_time": "2026-05-16T09:00:00+09:00",
+                                "headline": "분기보고서 제출",
+                                "summary": "시장 전반 공시 점검 대상입니다.",
+                                "confidence": 0.8,
+                            },
+                            {
+                                "event_id": "evt_news",
+                                "event_type": "NEWS_FLOW",
+                                "event_time": "2026-05-16T10:00:00+09:00",
+                                "headline": "시장 주요 뉴스",
+                                "summary": "빈 포트폴리오에서도 확인할 뉴스입니다.",
+                                "confidence": 0.7,
+                            },
+                            {
+                                "event_id": "evt_report",
+                                "event_type": "RESEARCH",
+                                "event_time": "2026-05-16T11:00:00+09:00",
+                                "headline": "증권사 리포트",
+                                "summary": "시장 전반 리포트입니다.",
+                                "confidence": 0.75,
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            documents_path.write_text(
+                json.dumps(
+                    {
+                        "documents": [
+                            {
+                                "doc_id": "doc_disclosure",
+                                "doc_type": "DISCLOSURE",
+                                "source_info": {"publisher": "DART"},
+                                "normalized_content": {"title": "분기보고서", "body": "공시 본문"},
+                                "timing_info": {
+                                    "published_at": "2026-05-16T09:00:00+09:00"
+                                },
+                            },
+                            {
+                                "doc_id": "doc_news",
+                                "doc_type": "NEWS",
+                                "source_info": {"publisher": "News"},
+                                "normalized_content": {"title": "시장 뉴스", "body": "뉴스 본문"},
+                                "timing_info": {
+                                    "published_at": "2026-05-16T10:00:00+09:00"
+                                },
+                            },
+                            {
+                                "doc_id": "doc_report",
+                                "doc_type": "REPORT",
+                                "source_info": {"publisher": "증권사"},
+                                "normalized_content": {"title": "시장 리포트", "body": "리포트 본문"},
+                                "timing_info": {
+                                    "published_at": "2026-05-16T11:00:00+09:00"
+                                },
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            knowledge_base = LocalKnowledgeBase.from_files(
+                events_path=events_path,
+                normalized_documents_path=documents_path,
+            )
+
+        portfolio = _empty_cash_portfolio()
+        disclosure = knowledge_base.slice_for_agent(
+            agent_id="disclosure",
+            portfolio=portfolio,
+            query="포트폴리오 관련 신규 공시와 실적 신호를 요약해줘.",
+            depth="shallow",
+        )
+        news = knowledge_base.slice_for_agent(
+            agent_id="news",
+            portfolio=portfolio,
+            query="최근 공시 이후 시장 반응과 관련 뉴스, 필요시 매크로 배경을 요약해줘.",
+            depth="shallow",
+        )
+        report = knowledge_base.slice_for_agent(
+            agent_id="report",
+            portfolio=portfolio,
+            query="포트폴리오 관련 증권사 리포트와 컨센서스 변화, 사업부 단서를 요약해줘.",
+            depth="shallow",
+        )
+
+        self.assertEqual(len(disclosure.events), 1)
+        self.assertEqual(len(disclosure.documents), 1)
+        self.assertEqual(len(news.events), 1)
+        self.assertEqual(len(news.documents), 1)
+        self.assertEqual(len(report.events), 1)
+        self.assertEqual(len(report.documents), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -770,8 +770,10 @@ class LocalKnowledgeBase:
     ) -> list[KnowledgeEvent]:
         results: list[KnowledgeEvent] = []
         agent_id = canonical_agent_id(agent_id)
+        market_wide = not alias_map
         wants_macro = any(
-            token in query.casefold() for token in ("거시", "macro", "환율", "금리", "지수")
+            token in query.casefold()
+            for token in ("거시", "매크로", "macro", "환율", "금리", "지수")
         )
         for event in sorted(self.events, key=lambda item: item.event_time, reverse=True):
             matched = self._match_tickers(
@@ -790,6 +792,11 @@ class LocalKnowledgeBase:
                 continue
             if agent_id == "news" and event.event_type == "RESEARCH":
                 continue
+            if market_wide:
+                if agent_id == "news" and event.event_type not in {"NEWS", "NEWS_FLOW", "MACRO"}:
+                    continue
+                if agent_id == "report" and event.event_type != "RESEARCH":
+                    continue
             if matched or event.event_type == "MACRO" or wants_macro:
                 results.append(
                     KnowledgeEvent(
@@ -801,6 +808,21 @@ class LocalKnowledgeBase:
                         confidence=event.confidence,
                         source_documents=event.source_documents,
                         matched_holdings=tuple(sorted(matched)),
+                        entities=event.entities,
+                        metadata=event.metadata,
+                    )
+                )
+            elif market_wide:
+                results.append(
+                    KnowledgeEvent(
+                        event_id=event.event_id,
+                        event_type=event.event_type,
+                        event_time=event.event_time,
+                        headline=event.headline,
+                        summary=event.summary,
+                        confidence=event.confidence,
+                        source_documents=event.source_documents,
+                        matched_holdings=(),
                         entities=event.entities,
                         metadata=event.metadata,
                     )
@@ -821,8 +843,10 @@ class LocalKnowledgeBase:
             "report": {"REPORT"},
         }.get(agent_id, set())
         results: list[KnowledgeDocument] = []
+        market_wide = not alias_map
         wants_macro = any(
-            token in query.casefold() for token in ("거시", "macro", "환율", "금리", "지수")
+            token in query.casefold()
+            for token in ("거시", "매크로", "macro", "환율", "금리", "지수")
         )
         for document in sorted(self.documents, key=lambda item: item.published_at, reverse=True):
             if doc_type_filter and document.doc_type not in doc_type_filter:
@@ -833,7 +857,11 @@ class LocalKnowledgeBase:
                 entities=document.entities,
                 alias_map=alias_map,
             )
-            if matched or (agent_id == "news" and wants_macro and document.doc_type == "NEWS"):
+            if (
+                matched
+                or market_wide
+                or (agent_id == "news" and wants_macro and document.doc_type == "NEWS")
+            ):
                 results.append(
                     KnowledgeDocument(
                         doc_id=document.doc_id,
