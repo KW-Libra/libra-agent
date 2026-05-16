@@ -1,0 +1,112 @@
+{
+  "_doc": "L4 행동 채점 시나리오. expect = 자동채점 기준. core_signal: 코어(news/disclosure) 평균 direction 방향. cached_result 있으면 재실행 없이 채점, 없으면 agent API POST.",
+  "scenarios": [
+    {
+      "name": "semi_shock",
+      "desc": "반도체 악재가 보유 티커(005930/000660)에 매핑 → 코어 SELL_BIAS, 정책 게이트",
+      "knowledge": {
+        "events": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\outputs\\semi_shock\\events.json",
+        "normalized_documents": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\outputs\\semi_shock\\normalized_documents.json"
+      },
+      "cached_result": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\outputs\\semi_shock\\result.json",
+      "portfolio_file": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\outputs\\semi_shock\\payload.json",
+      "expect": {
+        "http_ok": true,
+        "schema": true,
+        "core_signal": "negative",
+        "decision_in": ["USER_DECISION_REQUIRED", "REBALANCE", "DEFER"]
+      }
+    },
+    {
+      "name": "no_signal",
+      "desc": "거시 일반 뉴스(티커 매핑 없음) → 코어는 정직하게 QUIET/UNAVAILABLE (환각 금지)",
+      "knowledge": {
+        "events": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-ingest\\outputs\\live_e2e\\events.json",
+        "normalized_documents": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-ingest\\outputs\\live_e2e\\normalized_documents.json"
+      },
+      "cached_result": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\outputs\\scenario_result.json",
+      "portfolio_file": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\outputs\\scenario_payload.json",
+      "expect": {
+        "http_ok": true,
+        "schema": true,
+        "core_signal": "flat",
+        "no_hallucination": true,
+        "decision_in": ["USER_DECISION_REQUIRED", "DEFER", "HOLD"]
+      }
+    },
+    {
+      "name": "positive",
+      "desc": "반도체 호재가 보유 티커에 매핑 → 코어 BUY_BIAS",
+      "knowledge": {
+        "events": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\scenario_harness\\cache\\positive\\events.json",
+        "normalized_documents": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\scenario_harness\\cache\\positive\\normalized_documents.json"
+      },
+      "portfolio": {
+        "generated_at": "2026-05-16T09:00:00+09:00",
+        "holdings": [
+          {"ticker": "005930", "company_name": "삼성전자", "weight": 0.30, "aliases": ["005930.KS"], "shares": 40, "last_price": 62000, "sector": "반도체"},
+          {"ticker": "000660", "company_name": "SK하이닉스", "weight": 0.22, "aliases": ["000660.KS"], "shares": 7, "last_price": 185000, "sector": "반도체"},
+          {"ticker": "005380", "company_name": "현대차", "weight": 0.20, "aliases": ["005380.KS"], "shares": 8, "last_price": 210000, "sector": "자동차"},
+          {"ticker": "105560", "company_name": "KB금융", "weight": 0.20, "aliases": ["105560.KS"], "shares": 22, "last_price": 78000, "sector": "금융지주"}
+        ],
+        "total_value_krw": 12000000, "cash_weight": 0.08,
+        "user_preferences": ["장기 보유 우선", "단일 종목 40% 상한", "규제성 이슈는 사용자 승인 필요"]
+      },
+      "cached_result": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\scenario_harness\\results\\positive.json",
+      "expect": {
+        "http_ok": true,
+        "schema": true,
+        "core_signal": "positive",
+        "decision_in": ["REBALANCE", "DEFER", "HOLD", "USER_DECISION_REQUIRED"]
+      }
+    },
+    {
+      "name": "mixed",
+      "desc": "개별 호실적 + 거시 악재 상충 → 과신 REBALANCE 금지, 신중 분기",
+      "knowledge": {
+        "events": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\scenario_harness\\cache\\mixed\\events.json",
+        "normalized_documents": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\scenario_harness\\cache\\mixed\\normalized_documents.json"
+      },
+      "portfolio": {
+        "generated_at": "2026-05-16T09:00:00+09:00",
+        "holdings": [
+          {"ticker": "005930", "company_name": "삼성전자", "weight": 0.34, "aliases": ["005930.KS"], "shares": 45, "last_price": 62000, "sector": "반도체"},
+          {"ticker": "000660", "company_name": "SK하이닉스", "weight": 0.20, "aliases": ["000660.KS"], "shares": 6, "last_price": 185000, "sector": "반도체"},
+          {"ticker": "069500", "company_name": "KODEX 200", "weight": 0.30, "aliases": ["069500.KS"], "shares": 24, "last_price": 38000, "sector": "지수ETF"}
+        ],
+        "total_value_krw": 11000000, "cash_weight": 0.16,
+        "user_preferences": ["장기 보유 우선", "단일 종목 40% 상한", "규제성 이슈는 사용자 승인 필요"]
+      },
+      "cached_result": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\scenario_harness\\results\\mixed.json",
+      "expect": {
+        "http_ok": true,
+        "schema": true,
+        "decision_in": ["DEFER", "HOLD", "USER_DECISION_REQUIRED"]
+      }
+    },
+    {
+      "name": "policy_violation",
+      "desc": "명확한 호재이나 단일종목 비중이 정책 상한 초과 → 시그널과 무관하게 사용자 승인 게이트",
+      "knowledge": {
+        "events": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\scenario_harness\\cache\\positive\\events.json",
+        "normalized_documents": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\scenario_harness\\cache\\positive\\normalized_documents.json"
+      },
+      "portfolio": {
+        "generated_at": "2026-05-16T09:00:00+09:00",
+        "holdings": [
+          {"ticker": "005930", "company_name": "삼성전자", "weight": 0.58, "aliases": ["005930.KS"], "shares": 95, "last_price": 62000, "sector": "반도체"},
+          {"ticker": "000660", "company_name": "SK하이닉스", "weight": 0.30, "aliases": ["000660.KS"], "shares": 10, "last_price": 185000, "sector": "반도체"}
+        ],
+        "total_value_krw": 12500000, "cash_weight": 0.12,
+        "user_preferences": ["단일 종목 35% 상한 (엄수)", "반도체 섹터 60% 이내", "규제성·한도 위반은 반드시 사용자 승인"]
+      },
+      "cached_result": "C:\\kwu\\26-1 참빛설계\\Libra\\libra-agent\\scenario_harness\\results\\policy_violation.json",
+      "expect": {
+        "http_ok": true,
+        "schema": true,
+        "policy_gate": true,
+        "decision_in": ["USER_DECISION_REQUIRED"]
+      }
+    }
+  ]
+}
