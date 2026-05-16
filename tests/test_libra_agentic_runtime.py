@@ -794,6 +794,31 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
         self.assertEqual(action["candidate_rebalance_plan"], {})
         self.assertIn("도메인 심의 대상이 없습니다", action["reason"])
 
+    def test_core_finalize_empty_portfolio_does_not_frame_as_hold(self) -> None:
+        orchestrator = JudgeOrchestrator(client=FakeChatClient({}))
+
+        action = orchestrator._normalize_judge_action(
+            {
+                "action": "FINALIZE",
+                "reason": "포트폴리오가 비어 있는 상태에서는 유지 판단이 자동으로 성립합니다.",
+                "candidate_rebalance_plan": {},
+            },
+            query="현재 포트폴리오를 점검하고 유지/조정 필요성을 판단해줘.",
+            portfolio=_empty_cash_portfolio(),
+            responses=[],
+            called_agents=["disclosure", "news"],
+            depth="shallow",
+            trigger="pull",
+            trigger_event=None,
+            candidate_plan={},
+        )
+
+        self.assertIsNotNone(action)
+        assert action is not None
+        self.assertEqual(action["action"], "FINALIZE")
+        self.assertNotIn("유지", action["reason"])
+        self.assertIn("초기 포트폴리오 후보", action["reason"])
+
     def test_judge_phase_rejects_japanese_kana_payload(self) -> None:
         orchestrator = JudgeOrchestrator(
             client=FakeChatClient(

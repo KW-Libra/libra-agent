@@ -264,7 +264,7 @@ class LibraSchemaValidationTests(unittest.TestCase):
                 "summary": "초기 포트폴리오 후보가 필요합니다.",
                 "confidence": 0.95,
                 "urgency": "watch",
-                "reasoning": "보유 종목과 후보 리밸런싱 초안이 없습니다.",
+                "reasoning": "현재는 실행할 매매가 없으므로 사용자 결정이 필요합니다.",
                 "candidate_rebalance_plan": {},
                 "needs_trade_evaluation": True,
                 "feedback_checkpoint": "2026-05-17T09:00:00+09:00",
@@ -280,6 +280,8 @@ class LibraSchemaValidationTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["decision"], "DEFER")
+        self.assertIn("사용자 승인은 필요하지 않습니다", payload["reasoning"])
+        self.assertNotIn("사용자 결정이 필요", payload["reasoning"])
         self.assertEqual(payload["urgency"], "defer")
         self.assertEqual(payload["candidate_rebalance_plan"], {})
         self.assertFalse(payload["needs_trade_evaluation"])
@@ -299,7 +301,7 @@ class LibraSchemaValidationTests(unittest.TestCase):
                         "summary": "초기 포트폴리오 후보가 필요합니다.",
                         "confidence": 0.95,
                         "urgency": "watch",
-                        "reasoning": "보유 종목과 후보 리밸런싱 초안이 없습니다.",
+                        "reasoning": "현재는 실행할 매매가 없으므로 사용자 결정이 필요합니다.",
                         "candidate_rebalance_plan": {},
                         "needs_trade_evaluation": False,
                         "user_notification": {"level": "push", "action_required": True},
@@ -325,6 +327,7 @@ class LibraSchemaValidationTests(unittest.TestCase):
         output = response_events[-1][1]["output"]
         self.assertIsInstance(output, dict)
         self.assertEqual(output["decision"], "DEFER")
+        self.assertNotIn("사용자 결정이 필요", str(output.get("reasoning")))
 
     def test_empty_local_context_uses_consistent_empty_schema(self) -> None:
         empty_knowledge = LocalKnowledgeBase.from_state_payload(

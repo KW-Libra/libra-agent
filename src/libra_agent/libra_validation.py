@@ -18,6 +18,13 @@ ALLOWED_NEWS_SUB_ROLES = {"macro", "company_specific", "mixed"}
 ALLOWED_SENTIMENTS = {"positive", "negative", "neutral", "mixed"}
 ALLOWED_SOURCE_RELIABILITY = {"low", "medium", "high"}
 ALLOWED_NOTIFICATION_LEVELS = {"silent", "info", "watch", "push"}
+EMPTY_PORTFOLIO_NO_TRADE_SUMMARY = (
+    "포트폴리오가 비어 있고 후보 리밸런싱 초안도 없어 지금 실행할 매수·매도 조정은 없습니다."
+)
+EMPTY_PORTFOLIO_NO_TRADE_REASONING = (
+    "현재는 실행할 매매가 없으므로 사용자 승인은 필요하지 않습니다. "
+    "투자 검토를 시작하려면 초기 포트폴리오 후보 구성이 먼저 필요합니다."
+)
 
 
 def _normalize_key(value: str) -> str:
@@ -596,6 +603,9 @@ def sanitize_judge_payload(
         raw.get("summary"), default=_default_summary_for_decision(decision), limit=320
     )
     reasoning = _clean_text(raw.get("reasoning"), default=summary, limit=420)
+    if empty_portfolio_no_trade:
+        summary = EMPTY_PORTFOLIO_NO_TRADE_SUMMARY
+        reasoning = EMPTY_PORTFOLIO_NO_TRADE_REASONING
     confidence = _clamp(_as_float(raw.get("confidence"), 0.0), 0.0, 1.0)
     needs_trade_evaluation = (
         bool(candidate_plan)

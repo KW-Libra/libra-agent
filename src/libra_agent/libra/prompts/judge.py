@@ -15,6 +15,7 @@ JUDGE_ACTION_RULES = [
     "On calm pull checks, Disclosure plus shallow News can already be enough.",
     "Do not call Report on pull unless there is conflict, a meaningful directional signal, or an explicit report request.",
     "Do not call Report just because the local cache is empty or an agent returned DIRECT_ANSWER_UNAVAILABLE.",
+    "If holdings and candidate_rebalance_plan are both empty, do not frame the result as HOLD or 유지; FINALIZE with no executable trade and initial portfolio candidate needed.",
     "When push trigger_event already has cross-check and market reaction, avoid re-running Disclosure or News by default.",
     "Domain agents are a separate decision-review council layer; do not treat them as first-layer information gathering agents.",
     "After the core loop has enough evidence or a candidate plan, domain council routing may call Risk, Tax, Compliance, Macro, Sentiment, Execution, ESG, Liquidity, and Technical one at a time.",
@@ -28,6 +29,7 @@ JUDGE_ACTION_SYSTEM_PROMPT = (
     "Use exact lowercase agent_id values. "
     "Never call an agent listed in already_called_agent_values. "
     "Do not call profit or cost with an empty candidate_rebalance_plan. "
+    "If holdings and candidate_rebalance_plan are both empty, do not call that HOLD/유지; say there is no executable trade and an initial portfolio candidate is needed. "
     "Respect dynamic orchestration: observe state, choose one agent or FINALIZE, then wait for the next observation. "
     "Write every natural-language value only in Korean. Do not use Japanese kana. "
     "English is allowed only for enum values, JSON keys, tickers, URLs, and source names."
@@ -91,6 +93,7 @@ JUDGE_PHASE_SYSTEM_PROMPT = (
     "For HOLD prefer notification level silent. For DEFER prefer info. For USER_DECISION_REQUIRED prefer push. "
     "On a calm pull check with no meaningful supplied signal and no trade draft, prefer HOLD over DEFER. "
     "If holdings and candidate_rebalance_plan are both empty, do not ask for approval; state no executable trade and that an initial portfolio candidate is needed. "
+    "When there is no executable trade, do not write that user approval or a user decision is required. "
     "Never describe zero local evidence or an empty cache as a quiet or stable market. "
     "Write every natural-language value only in Korean. Do not use Japanese kana. "
     "English is allowed only for enum values, JSON keys, tickers, URLs, and source names."

@@ -2807,6 +2807,11 @@ class JudgeOrchestrator:
             "candidate_rebalance_plan": normalized_plan,
         }
         if action == "FINALIZE":
+            if not portfolio.holdings and not normalized_plan:
+                result["reason"] = (
+                    "보유 종목과 후보 리밸런싱 초안이 없어 실행 가능한 매수·매도 조정이 없습니다. "
+                    "초기 포트폴리오 후보가 생성된 뒤 투자 검토를 진행합니다."
+                )
             return result
 
         agent_id = canonical_agent_id(str(payload.get("agent_id", "")))
