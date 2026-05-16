@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 
 import httpx
@@ -107,6 +108,21 @@ class AnthropicChatClientTests(unittest.TestCase):
 
         with self.assertRaises(AnthropicClientError):
             client.ensure_available()
+
+    def test_request_timeout_is_capped_for_external_llm_calls(self) -> None:
+        self.addCleanup(os.environ.pop, "LIBRA_LLM_REQUEST_TIMEOUT_SECONDS", None)
+        os.environ.pop("LIBRA_LLM_REQUEST_TIMEOUT_SECONDS", None)
+        client = AnthropicChatClient(
+            api_key="test-key",
+            model="claude-test",
+            timeout_seconds=180,
+        )
+
+        self.assertEqual(client._effective_timeout(), 45.0)
+
+        os.environ["LIBRA_LLM_REQUEST_TIMEOUT_SECONDS"] = "12.5"
+        self.assertEqual(client._effective_timeout(), 12.5)
+        self.assertEqual(client._effective_timeout(5), 5.0)
 
 
 if __name__ == "__main__":

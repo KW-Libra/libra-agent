@@ -112,6 +112,23 @@ class LibraBackendConfigTests(unittest.TestCase):
         self.assertEqual(config.backend, "llama_cpp")
         self.assertFalse(config.launch_server)
 
+    def test_remote_backend_config_defaults_to_short_llm_timeout(self) -> None:
+        self.addCleanup(os.environ.pop, "LIBRA_LLM_PROVIDER", None)
+        self.addCleanup(os.environ.pop, "LIBRA_LLM_TIMEOUT_SECONDS", None)
+        os.environ["LIBRA_LLM_PROVIDER"] = "anthropic"
+        os.environ.pop("LIBRA_LLM_TIMEOUT_SECONDS", None)
+
+        config = backend_config_from_env()
+
+        self.assertIsInstance(config, AnthropicBackendConfig)
+        self.assertEqual(config.timeout_seconds, 45.0)
+
+        os.environ["LIBRA_LLM_TIMEOUT_SECONDS"] = "90"
+        overridden = backend_config_from_env()
+
+        self.assertIsInstance(overridden, AnthropicBackendConfig)
+        self.assertEqual(overridden.timeout_seconds, 90.0)
+
     def test_create_chat_client_returns_ollama_client(self) -> None:
         client = create_chat_client(
             OllamaBackendConfig(

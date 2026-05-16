@@ -1021,6 +1021,7 @@ class LLMAgent:
             depth=depth,
             turn_number=turn_number,
         )
+        raw_response: Mapping[str, Any] = {}
         try:
             publish_llm_prompt(
                 actor=self.agent_id,
@@ -1057,9 +1058,15 @@ class LLMAgent:
                 model=str(getattr(self.client, "model", "unknown")),
                 error=exc,
             )
-            raise ChatClientError(
-                f"{self.agent_id} agent LLM failed; local deterministic response fallback is disabled."
-            ) from exc
+            response = self._local_fallback_response(
+                query=query,
+                turn_number=turn_number,
+                portfolio=portfolio,
+                knowledge_slice=knowledge_slice,
+                opinion_id=opinion_id,
+                depth=depth,
+                reason=f"agent_response failed: {type(exc).__name__}",
+            )
 
         if self._is_low_signal_response(response):
             try:
@@ -1077,12 +1084,24 @@ class LLMAgent:
                     depth=depth,
                 )
             except (ChatClientError, ValueError, TypeError) as exc:
-                raise ChatClientError(
-                    f"{self.agent_id} agent LLM repair failed; local deterministic response fallback is disabled."
-                ) from exc
+                response = self._local_fallback_response(
+                    query=query,
+                    turn_number=turn_number,
+                    portfolio=portfolio,
+                    knowledge_slice=knowledge_slice,
+                    opinion_id=opinion_id,
+                    depth=depth,
+                    reason=f"agent_response_repair failed: {type(exc).__name__}",
+                )
         if self._is_low_signal_response(response):
-            raise ChatClientError(
-                f"{self.agent_id} agent LLM returned a sparse or untrustworthy response."
+            response = self._local_fallback_response(
+                query=query,
+                turn_number=turn_number,
+                portfolio=portfolio,
+                knowledge_slice=knowledge_slice,
+                opinion_id=opinion_id,
+                depth=depth,
+                reason="agent_response remained sparse after validation",
             )
         response = sanitize_agent_response_payload(
             response.to_dict(),
@@ -1201,6 +1220,187 @@ class LLMAgent:
             output=response,
         )
         return response
+
+    def _local_fallback_response(
+        self,
+        *,
+        query: str,
+        turn_number: int,
+        portfolio: PortfolioSnapshot,
+        knowledge_slice: KnowledgeSlice,
+        opinion_id: str,
+        depth: str,
+        reason: str,
+    ) -> AgentResponse:
+        event_count = len(knowledge_slice.events)
+        document_count = len(knowledge_slice.documents)
+        has_evidence = bool(event_count or document_count)
+        evidence = self._fallback_evidence(knowledge_slice)
+        publish_llm_skipped(
+            actor=self.agent_id,
+            phase="agent_response_fallback",
+            reason="LLM 응답 실패로 로컬 근거 기반 자동 요약 폴백을 사용합니다.",
+            context={
+                "fallback_reason": reason,
+                "events": event_count,
+                "documents": document_count,
+            },
+        )
+        if has_evidence:
+            verdict = AgentVerdict.PARTIAL_ANSWER
+        elif self.agent_id == "news":
+            verdict = AgentVerdict.QUIET
+        else:
+            verdict = AgentVerdict.DIRECT_ANSWER_UNAVAILABLE
+        raw_response = {
+            "agent_id": self.agent_id,
+            "opinion_id": opinion_id,
+            "turn_number": turn_number,
+            "query_understood": query,
+            "verdict": verdict.value,
+            "evidence": evidence,
+            "direction": 0.0,
+            "strength": 0.0,
+            "urgency": Urgency.DEFER.value,
+            "confidence": 0.25 if has_evidence else 0.2,
+            "reasoning_for_judge_agent": (
+                f"로컬 근거 이벤트 {event_count}건과 문서 {document_count}건은 확보했지만 "
+                "LLM 응답을 받지 못해 자동 요약으로 대체합니다. "
+                "최종 판단에는 근거 존재 여부와 에이전트 범위 제한만 참고하세요."
+            ),
+            "limits_acknowledged": (
+                f"LLM 호출 실패 폴백입니다. reason={reason}; "
+                "본문 해석이나 투자 방향성 평가는 수행하지 않았습니다."
+            ),
+            "references": [],
+            "focus_tickers": [],
+        }
+        response = sanitize_agent_response_payload(
+            raw_response,
+            agent_id=self.agent_id,
+            portfolio=portfolio,
+            query=query,
+            turn_number=turn_number,
+            opinion_id=opinion_id,
+            depth=depth,
+        )
+        response.tools_called = knowledge_slice.tools_called
+        response.depth_used = depth
+        return response
+
+    def _fallback_evidence(self, knowledge_slice: KnowledgeSlice) -> dict[str, Any]:
+        if self.agent_id == "disclosure":
+            items = [self._fallback_event_item(event) for event in knowledge_slice.events[:6]]
+            if not items:
+                items = [
+                    self._fallback_document_item(document)
+                    for document in knowledge_slice.documents[:6]
+                ]
+            return {
+                "found_count": len(knowledge_slice.events) + len(knowledge_slice.documents),
+                "items": items,
+                "upcoming_disclosures": [],
+            }
+        if self.agent_id == "news":
+            headlines = [
+                item
+                for item in (
+                    [
+                        truncate(event.headline or event.summary, 160)
+                        for event in knowledge_slice.events[:6]
+                    ]
+                    + [
+                        truncate(document.title or document.body, 160)
+                        for document in knowledge_slice.documents[:4]
+                    ]
+                )
+                if item
+            ]
+            return {
+                "sub_role": "mixed",
+                "company_findings": {
+                    "portfolio": {
+                        "sentiment": "neutral",
+                        "key_headlines": headlines[:5],
+                        "market_reaction": None,
+                        "sector_comparison": None,
+                    }
+                },
+                "macro_findings": {
+                    "events_count": len(knowledge_slice.events),
+                    "documents_count": len(knowledge_slice.documents),
+                    "headlines": headlines[:8],
+                },
+                "source_reliability": "medium",
+                "cross_check_count": 0,
+            }
+        if self.agent_id == "report":
+            items = [
+                self._fallback_document_item(document) for document in knowledge_slice.documents[:6]
+            ]
+            return {
+                "coverage_reports_count": len(items),
+                "preview_reports_count": 0,
+                "items": items,
+                "consensus": None,
+            }
+        if self.agent_id == "profit":
+            return {
+                "plan_simulation": {
+                    "rebalance_plan": {},
+                    "ticker_signals": {},
+                    "expected_return_1m": 0,
+                    "expected_return_3m": 0,
+                    "sharpe_ratio": 0,
+                    "max_drawdown": 0,
+                    "recommendation_text": "LLM 실패로 수익성 시뮬레이션을 수행하지 못했습니다.",
+                }
+            }
+        if self.agent_id == "cost":
+            return {
+                "trade_cost": {
+                    "rebalance_plan": {},
+                    "commission_krw": 0,
+                    "tax_krw": 0,
+                    "estimated_slippage_bp": 0,
+                    "spread_state_bp": 0,
+                    "total_friction_bp": 0,
+                }
+            }
+        return {
+            "events": [event.to_dict() for event in knowledge_slice.events[:4]],
+            "documents": [document.to_dict() for document in knowledge_slice.documents[:3]],
+        }
+
+    def _fallback_event_item(self, event: KnowledgeEvent) -> dict[str, Any]:
+        ticker = next(iter(event.matched_holdings), None)
+        primary_entity = event.entities[0] if event.entities else None
+        return {
+            "ticker": ticker or (primary_entity.ticker if primary_entity else None),
+            "company_name": primary_entity.entity_name if primary_entity else None,
+            "type": event.event_type,
+            "headline": event.headline,
+            "summary": event.summary,
+            "date": event.event_time.isoformat(),
+        }
+
+    def _fallback_document_item(self, document: KnowledgeDocument) -> dict[str, Any]:
+        ticker = next(iter(document.matched_holdings), None)
+        primary_entity = document.entities[0] if document.entities else None
+        return {
+            "ticker": ticker or (primary_entity.ticker if primary_entity else None),
+            "company_name": primary_entity.entity_name if primary_entity else None,
+            "type": document.event_type or document.doc_type,
+            "headline": document.title,
+            "summary": truncate(document.body, 320),
+            "date": document.published_at.isoformat(),
+            "broker": document.publisher or document.source_name,
+            "publisher": document.publisher or document.source_name,
+            "matched_holdings": list(document.matched_holdings),
+            "key_thesis": truncate(document.body or document.title, 320),
+            "published_at": document.published_at.isoformat(),
+            "report_type": document.doc_type.casefold() or "other",
+        }
 
     def _run_tool_loop(
         self,

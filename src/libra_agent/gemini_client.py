@@ -11,6 +11,8 @@ import httpx
 
 from .errors import ChatClientError
 
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 45.0
+
 
 class GeminiClientError(ChatClientError):
     pass
@@ -27,7 +29,7 @@ class GeminiChatClient:
         model: str = "gemini-2.5-flash",
         base_url: str = "https://generativelanguage.googleapis.com",
         max_tokens: int = 4096,
-        timeout_seconds: float = 180.0,
+        timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.api_key = api_key.strip()
@@ -154,9 +156,26 @@ class GeminiChatClient:
 
     def _http_client(self, *, timeout: float | None = None) -> httpx.Client:
         return httpx.Client(
-            timeout=self.timeout_seconds if timeout is None else timeout,
+            timeout=self._effective_timeout(timeout),
             transport=self.transport,
         )
+
+    def _effective_timeout(self, timeout: float | None = None) -> float:
+        base_timeout = self.timeout_seconds if timeout is None else timeout
+        try:
+            base_timeout = float(base_timeout)
+        except (TypeError, ValueError):
+            base_timeout = DEFAULT_REQUEST_TIMEOUT_SECONDS
+        return max(1.0, min(base_timeout, self._request_timeout_cap()))
+
+    def _request_timeout_cap(self) -> float:
+        raw = os.environ.get("LIBRA_LLM_REQUEST_TIMEOUT_SECONDS")
+        if raw is None or not raw.strip():
+            return DEFAULT_REQUEST_TIMEOUT_SECONDS
+        try:
+            return max(1.0, float(raw))
+        except ValueError:
+            return DEFAULT_REQUEST_TIMEOUT_SECONDS
 
     def _model_url(self) -> str:
         return f"{self.base_url}/v1beta/models/{self.model}?key={self.api_key}"

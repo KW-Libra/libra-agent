@@ -14,6 +14,7 @@ DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-5"
 DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_ANTHROPIC_MAX_TOKENS = 4096
+DEFAULT_REMOTE_LLM_TIMEOUT_SECONDS = 45.0
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_GEMINI_MAX_TOKENS = 4096
@@ -67,7 +68,7 @@ class AnthropicBackendConfig:
     base_url: str = DEFAULT_ANTHROPIC_BASE_URL
     anthropic_version: str = DEFAULT_ANTHROPIC_VERSION
     max_tokens: int = DEFAULT_ANTHROPIC_MAX_TOKENS
-    timeout_seconds: float = 180.0
+    timeout_seconds: float = DEFAULT_REMOTE_LLM_TIMEOUT_SECONDS
 
 
 @dataclass(slots=True, frozen=True)
@@ -77,7 +78,7 @@ class GeminiBackendConfig:
     model: str = DEFAULT_GEMINI_MODEL
     base_url: str = DEFAULT_GEMINI_BASE_URL
     max_tokens: int = DEFAULT_GEMINI_MAX_TOKENS
-    timeout_seconds: float = 180.0
+    timeout_seconds: float = DEFAULT_REMOTE_LLM_TIMEOUT_SECONDS
 
 
 LibraBackendConfig = (
@@ -268,7 +269,9 @@ def backend_config_from_env(*, default_backend: BackendName = "llama_cpp") -> Li
         return OllamaBackendConfig(
             model=os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
             host=os.getenv("OLLAMA_HOST", DEFAULT_OLLAMA_HOST),
-            timeout_seconds=_env_float("LIBRA_LLM_TIMEOUT_SECONDS", 180.0),
+            timeout_seconds=_env_float(
+                "LIBRA_LLM_TIMEOUT_SECONDS", DEFAULT_REMOTE_LLM_TIMEOUT_SECONDS
+            ),
         )
     if backend == "anthropic":
         return AnthropicBackendConfig(
@@ -281,7 +284,9 @@ def backend_config_from_env(*, default_backend: BackendName = "llama_cpp") -> Li
             base_url=os.getenv("ANTHROPIC_BASE_URL", DEFAULT_ANTHROPIC_BASE_URL),
             anthropic_version=os.getenv("ANTHROPIC_VERSION", DEFAULT_ANTHROPIC_VERSION),
             max_tokens=_env_int("ANTHROPIC_MAX_TOKENS", DEFAULT_ANTHROPIC_MAX_TOKENS),
-            timeout_seconds=_env_float("LIBRA_LLM_TIMEOUT_SECONDS", 180.0),
+            timeout_seconds=_env_float(
+                "LIBRA_LLM_TIMEOUT_SECONDS", DEFAULT_REMOTE_LLM_TIMEOUT_SECONDS
+            ),
         )
     if backend == "gemini":
         return GeminiBackendConfig(
@@ -291,7 +296,9 @@ def backend_config_from_env(*, default_backend: BackendName = "llama_cpp") -> Li
             ),
             base_url=os.getenv("GEMINI_BASE_URL", DEFAULT_GEMINI_BASE_URL),
             max_tokens=_env_int("GEMINI_MAX_TOKENS", DEFAULT_GEMINI_MAX_TOKENS),
-            timeout_seconds=_env_float("LIBRA_LLM_TIMEOUT_SECONDS", 180.0),
+            timeout_seconds=_env_float(
+                "LIBRA_LLM_TIMEOUT_SECONDS", DEFAULT_REMOTE_LLM_TIMEOUT_SECONDS
+            ),
         )
     if backend == "llama_cpp":
         return LlamaCppBackendConfig(

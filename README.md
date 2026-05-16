@@ -74,6 +74,7 @@ sudo editor /etc/libra/agent.env
 |---|---|
 | `DATABASE_URL` | **libra-agent LangGraph checkpointer 전용 PostgreSQL URL**. `postgresql://...` 또는 `postgres://...`만 사용한다. portfolio/order/report 같은 도메인 데이터 DB가 아니며, backend용 RDS MySQL `LIBRA_DB_*` 값을 대신 넣으면 안 된다. |
 | `ANTHROPIC_API_KEY` | `LIBRA_LLM_PROVIDER=anthropic` 배포에서 Claude 호출에 필요하다. |
+| `LIBRA_LLM_TIMEOUT_SECONDS`, `LIBRA_LLM_REQUEST_TIMEOUT_SECONDS` | 외부 LLM 호출 제한 시간. 기본 45초이며, 초과 시 하위 에이전트는 로컬 근거 기반 폴백 응답으로 진행한다. |
 | `LIBRA_DOMAIN_AGENTS_ENABLED` | `true`이면 domain council adapter를 켠다. venv 설치도 반드시 `.[domain-agents]` extra로 해야 한다. |
 | `KNOWLEDGE_CACHE_DIR` | agent가 먼저 읽는 promote 완료 knowledge cache 경로. 기본값은 `/opt/libra/knowledge/current`. |
 | `S3_BUCKET`, `AWS_REGION`, `KNOWLEDGE_S3_PREFIX` | local cache에 필수 artifact가 없을 때 읽는 S3 fallback. `s3://$S3_BUCKET/$KNOWLEDGE_S3_PREFIX/...` 형태로 `manifest.json`, `normalized_documents.json`, `events.json` 등을 찾는다. |

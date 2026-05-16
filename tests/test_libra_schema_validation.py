@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from libra_agent.errors import ChatClientError
 from libra_agent.libra.agents.disclosure_agent import DisclosureAgent
 from libra_agent.libra.prompts import DISCLOSURE_PROMPT_PROFILE
 from libra_agent.libra_models import AgentVerdict, PortfolioSnapshot, Urgency
@@ -17,6 +18,13 @@ class FakeChatClient:
 
     def chat_json(self, **_: object) -> dict[str, object]:
         return dict(self.payload)
+
+
+class FailingChatClient:
+    model = "offline-test"
+
+    def chat_json(self, **_: object) -> dict[str, object]:
+        raise ChatClientError("offline")
 
 
 def _portfolio() -> PortfolioSnapshot:
@@ -176,6 +184,37 @@ class LibraSchemaValidationTests(unittest.TestCase):
 
         self.assertEqual(response.verdict, AgentVerdict.PARTIAL_ANSWER)
         self.assertEqual(response.confidence, 0.35)
+
+    def test_llm_agent_falls_back_to_local_evidence_when_llm_fails(self) -> None:
+        events: list[tuple[str, dict[str, object]]] = []
+        token = debate_event_publisher.set(lambda event, payload: events.append((event, payload)))
+        try:
+            response = LLMAgent(agent_id="disclosure", client=FailingChatClient()).run(
+                query="삼성전자 공시를 요약해줘.",
+                turn_number=1,
+                portfolio=_portfolio(),
+                knowledge_base=_knowledge_base_with_disclosure(),
+                depth="shallow",
+            )
+        finally:
+            debate_event_publisher.reset(token)
+
+        self.assertEqual(response.verdict, AgentVerdict.PARTIAL_ANSWER)
+        self.assertGreaterEqual(response.confidence, 0.2)
+        self.assertEqual(response.evidence["found_count"], 1)
+        self.assertIn("자동 요약", response.reasoning_for_judge_agent)
+        self.assertTrue(
+            any(
+                event == "llm_error" and payload.get("phase") == "agent_response"
+                for event, payload in events
+            )
+        )
+        self.assertTrue(
+            any(
+                event == "llm_skipped" and payload.get("phase") == "agent_response_fallback"
+                for event, payload in events
+            )
+        )
 
     def test_judge_payload_sanitizer_normalizes_defaults(self) -> None:
         payload = sanitize_judge_payload(

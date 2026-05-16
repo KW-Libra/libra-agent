@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from typing import Any
 
 import httpx
 
 from .errors import ChatClientError
+
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 45.0
 
 
 class AnthropicClientError(ChatClientError):
@@ -22,7 +25,7 @@ class AnthropicChatClient:
         base_url: str = "https://api.anthropic.com",
         anthropic_version: str = "2023-06-01",
         max_tokens: int = 4096,
-        timeout_seconds: float = 180.0,
+        timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.api_key = api_key.strip()
@@ -131,9 +134,26 @@ class AnthropicChatClient:
 
     def _http_client(self, *, timeout: float | None = None) -> httpx.Client:
         return httpx.Client(
-            timeout=self.timeout_seconds if timeout is None else timeout,
+            timeout=self._effective_timeout(timeout),
             transport=self.transport,
         )
+
+    def _effective_timeout(self, timeout: float | None = None) -> float:
+        base_timeout = self.timeout_seconds if timeout is None else timeout
+        try:
+            base_timeout = float(base_timeout)
+        except (TypeError, ValueError):
+            base_timeout = DEFAULT_REQUEST_TIMEOUT_SECONDS
+        return max(1.0, min(base_timeout, self._request_timeout_cap()))
+
+    def _request_timeout_cap(self) -> float:
+        raw = os.environ.get("LIBRA_LLM_REQUEST_TIMEOUT_SECONDS")
+        if raw is None or not raw.strip():
+            return DEFAULT_REQUEST_TIMEOUT_SECONDS
+        try:
+            return max(1.0, float(raw))
+        except ValueError:
+            return DEFAULT_REQUEST_TIMEOUT_SECONDS
 
     def _extract_text(self, content: Any) -> str:
         if isinstance(content, str):
