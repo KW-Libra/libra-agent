@@ -116,8 +116,18 @@ class MacroAgent(BaseAgent):
             cross_validate=True,  # Gemini + Claude 교차 검증
         )
 
+        has_macro_observation = bool(macro_data)
+        has_investment_subject = bool(ctx.holdings or ctx.proposed_trades)
+
         # 투표 결정 (매크로 충격 임계값 기반)
-        if abs(macro_impact_score) < 0.05:
+        if not has_investment_subject and not has_macro_observation:
+            vote, confidence = "abstain", 0.55
+            rationale = (
+                "보유 종목, 제안 거래, 실시간 매크로 지표가 없어 경기 국면이나 투자 진입 시점을 "
+                "판단할 근거가 없습니다. abstain - 기준금리, 물가, 지수/거래대금 또는 초기 후보가 "
+                "주입된 뒤 재평가해야 합니다."
+            )
+        elif abs(macro_impact_score) < 0.05:
             vote, confidence = "approve", 0.75
         elif macro_impact_score > 0.10:
             vote, confidence = "abstain", 0.60  # 불리하지만 차단할 수준은 아님

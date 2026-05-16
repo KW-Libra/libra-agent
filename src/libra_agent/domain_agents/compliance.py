@@ -126,6 +126,18 @@ class ComplianceAgent(BaseAgent):
                 ],
             )
 
+        if not ctx.holdings and not ctx.proposed_trades:
+            return AgentVerdict(
+                agent_id=self.agent_id,
+                vote="abstain",
+                confidence=0.80,
+                rationale=(
+                    "보유 종목과 제안 거래가 없어 IPS 위반은 없지만 승인할 투자 행동도 없습니다. "
+                    f"abstain - approval_mode={approval_mode}, 0 violations."
+                ),
+                signals=[{"label": "IPS violations", "value": "0"}],
+            )
+
         return AgentVerdict(
             agent_id=self.agent_id,
             vote="approve",

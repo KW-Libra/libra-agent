@@ -117,12 +117,21 @@ class RiskAgent(BaseAgent):
 
         # ── 투표 결정 ───────────────────────────────────────────
 
-        vote = "approve"
-        confidence = 0.85
+        vote = "abstain"
+        confidence = 0.60
 
-        if top5_weight > self.CONCENTRATION_THRESHOLD:
+        if not holdings and not ctx.proposed_trades:
+            rationale = (
+                "보유 종목과 제안 거래가 없어 집중도, VaR, MDD를 평가할 투자 리스크 대상이 없습니다. "
+                "abstain - 초기 포트폴리오 후보가 생성된 뒤 리스크 한도 위반 여부를 평가해야 합니다."
+            )
+
+        elif top5_weight > self.CONCENTRATION_THRESHOLD:
             vote = "approve"  # 집중도 위반이 리밸런싱 이유
             confidence = 0.90
+        elif holdings or ctx.proposed_trades:
+            vote = "approve"
+            confidence = 0.85
 
         if risk_metrics and ctx.total_value > 0:
             var_pct = risk_metrics.var_95 / ctx.total_value

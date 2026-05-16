@@ -128,7 +128,13 @@ class ExecutionAgent(BaseAgent):
         )
 
         # 투표
-        if total_impact_bps > self.MAX_IMPACT_BPS * 2:
+        if not ctx.proposed_trades:
+            vote, confidence = "abstain", 0.65
+            rationale = (
+                "제안된 거래가 없어(trade_analyses=[], total_impact_bps=0.0) 체결 비용 분석 대상이 "
+                "존재하지 않습니다. abstain - 거래 제안이 생성되면 시장충격을 재평가합니다."
+            )
+        elif total_impact_bps > self.MAX_IMPACT_BPS * 2:
             vote, confidence = "reject", 0.85
             rationale += f" 총 시장충격 {total_impact_bps:.1f}bps — 임계값 {self.MAX_IMPACT_BPS}bps 초과 거부."
         elif total_impact_bps > self.MAX_IMPACT_BPS:

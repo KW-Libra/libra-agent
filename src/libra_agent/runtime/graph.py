@@ -173,8 +173,8 @@ async def _node_final_judge(state: GraphState) -> dict[str, Any]:
         "compliance_after": {"can_proceed": True, "violations": [], "state": "AFTER"},
         "final_decision": {
             "decision": "HOLD",
-            "branch": "USER_APPROVAL_REQUIRED" if approval_required else "CONSENSUS",
-            "requires_approval": approval_required,
+            "branch": "CONSENSUS",
+            "requires_approval": False,
             "trades": [],
             "reasoning": "(stub) — 다음 단계에서 채움",
         },
@@ -393,10 +393,15 @@ def _final_decision_from_agent_result(
         if isinstance(decision.get("user_notification"), Mapping)
         else {}
     )
+    decision_value = str(decision.get("decision") or "").upper()
+    trades = decision.get("candidate_rebalance_plan") or {}
+    has_trade_plan = isinstance(trades, Mapping) and bool(trades)
+    explicit_action_required = (
+        bool(notification.get("action_required")) or decision_value == "USER_DECISION_REQUIRED"
+    )
     requires_approval = (
-        approval_required
-        or bool(notification.get("action_required"))
-        or str(decision.get("decision") or "").upper() == "USER_DECISION_REQUIRED"
+        explicit_action_required
+        or (approval_required and has_trade_plan and decision_value in {"REBALANCE"})
     )
     return {
         "decision": decision.get("decision") or "HOLD",
@@ -406,7 +411,7 @@ def _final_decision_from_agent_result(
             else decision.get("branch") or decision.get("urgency") or "AGENT_RUNTIME"
         ),
         "requires_approval": requires_approval,
-        "trades": decision.get("candidate_rebalance_plan") or {},
+        "trades": trades,
         "reasoning": decision.get("reasoning") or decision.get("summary") or "",
         "summary": decision.get("summary") or "",
         "confidence": decision.get("confidence"),

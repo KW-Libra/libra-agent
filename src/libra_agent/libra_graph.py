@@ -609,6 +609,30 @@ class LibraLangGraphRuntime:
                 )
                 decision.options = []
                 decision.auto_safeguards = {}
+        if not portfolio.holdings and not candidate_plan:
+            decision.decision = DecisionType.DEFER
+            decision.urgency = Urgency.DEFER
+            decision.summary = (
+                "포트폴리오가 비어 있고 후보 리밸런싱 초안도 없어 지금 실행할 매수·매도 조정은 없습니다."
+            )
+            decision.reasoning = (
+                "공시·뉴스의 로컬 근거 0건은 시장이 조용하다는 뜻이 아니라 현재 주입된 근거가 "
+                "부족하다는 뜻입니다. 보유 종목과 주문 후보가 없으므로 유동성·기술·체결·세금 "
+                "검토 대상도 없고, 투자 판단을 내려면 시장/종목 데이터 수집 후 초기 분산 "
+                "포트폴리오 후보를 먼저 생성해야 합니다."
+            )
+            decision.candidate_rebalance_plan = {}
+            decision.needs_trade_evaluation = False
+            decision.feedback_checkpoint = None
+            decision.options = []
+            decision.user_notification = UserNotification(
+                level="info",
+                body=decision.summary,
+                action_required=False,
+                kind="empty_portfolio_needs_candidate",
+                estimated_followup=decision.follow_up_at,
+                sent_at=self.coordinator._notification_timestamp(),
+            )
         self.coordinator._apply_push_guardrails(
             decision=decision,
             portfolio=portfolio,

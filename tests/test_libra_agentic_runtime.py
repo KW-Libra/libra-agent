@@ -259,6 +259,18 @@ def _empty_direct_indexing_portfolio() -> PortfolioSnapshot:
     )
 
 
+def _empty_cash_portfolio() -> PortfolioSnapshot:
+    return PortfolioSnapshot.from_dict(
+        {
+            "generated_at": "2026-05-07T09:00:00+09:00",
+            "holdings": [],
+            "total_value_krw": 30000000,
+            "cash_weight": 1.0,
+            "user_preferences": ["모의투자 기준", "리스크 우선", "무리한 회전율 회피"],
+        }
+    )
+
+
 def _portfolio_definition() -> PortfolioDefinition:
     return PortfolioDefinition.from_dict(
         {
@@ -763,6 +775,24 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
                 trigger_event=None,
                 candidate_plan=None,
             )
+
+    def test_domain_routing_finalizes_empty_portfolio_without_llm(self) -> None:
+        orchestrator = JudgeOrchestrator(client=FailingChatClient())
+
+        action = orchestrator._domain_next_action(
+            query="현재 포트폴리오를 점검하고 유지/조정 필요성을 판단해줘.",
+            portfolio=_empty_cash_portfolio(),
+            responses=[],
+            called_agents=["disclosure", "news"],
+            depth="shallow",
+            trigger="pull",
+            trigger_event=None,
+            candidate_plan={},
+        )
+
+        self.assertEqual(action["action"], "FINALIZE_DOMAIN_REVIEW")
+        self.assertEqual(action["candidate_rebalance_plan"], {})
+        self.assertIn("도메인 심의 대상이 없습니다", action["reason"])
 
     def test_judge_phase_rejects_japanese_kana_payload(self) -> None:
         orchestrator = JudgeOrchestrator(

@@ -111,6 +111,10 @@ def _parse_user_preferences(items: Iterable[str]) -> dict[str, Any]:
     preferences["preference_notes"] = notes
     if "approval_mode" in preferences and "approval" not in preferences:
         preferences["approval"] = preferences["approval_mode"]
+    if "risk_profile" not in preferences:
+        note_text = " ".join(notes).casefold()
+        if any(token in note_text for token in ("리스크 우선", "보수", "방어", "risk first", "conservative")):
+            preferences["risk_profile"] = "risk_first"
     return preferences
 
 

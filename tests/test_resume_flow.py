@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.types import Command
 
 from libra_agent.runtime.graph import (
+    _final_decision_from_agent_result,
     _knowledge_base_from_state,
     _knowledge_snapshot_for_state,
     build_graph,
 )
 
 
-async def test_approval_required_run_interrupts_and_resumes():
+async def test_approval_required_noop_run_completes_without_interrupt():
     graph = build_graph(checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": "test-thread"}}
 
@@ -26,29 +26,13 @@ async def test_approval_required_run_interrupts_and_resumes():
     )
     snapshot = await graph.aget_state(config)
 
-    assert "__interrupt__" in result
-    assert snapshot.interrupts
-    assert snapshot.interrupts[0].value["type"] == "human_approval"
-    assert snapshot.interrupts[0].value["decision"] == "HOLD"
-
-    resumed = await graph.ainvoke(
-        Command(
-            resume={
-                "approved": True,
-                "decision": "APPROVE",
-                "option_index": 0,
-                "note": "ok",
-            }
-        ),
-        config=config,
-    )
-
-    assert resumed["run_status"] == "completed_after_resume"
-    assert resumed["approval_response"]["approved"] is True
-    assert resumed["approval_response"]["decision"] == "APPROVE"
+    assert "__interrupt__" not in result
+    assert not snapshot.interrupts
+    assert result["run_status"] == "completed"
+    assert result["final_decision"]["requires_approval"] is False
 
 
-async def test_enable_human_interrupts_run_interrupts():
+async def test_enable_human_interrupts_noop_run_completes_without_interrupt():
     graph = build_graph(checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": "test-enable-human-interrupts"}}
 
@@ -64,9 +48,28 @@ async def test_enable_human_interrupts_run_interrupts():
     )
     snapshot = await graph.aget_state(config)
 
-    assert "__interrupt__" in result
-    assert snapshot.interrupts
-    assert snapshot.interrupts[0].value["type"] == "human_approval"
+    assert "__interrupt__" not in result
+    assert not snapshot.interrupts
+    assert result["run_status"] == "completed"
+    assert result["final_decision"]["requires_approval"] is False
+
+
+def test_actionable_rebalance_requires_approval_when_human_review_enabled():
+    final = _final_decision_from_agent_result(
+        {
+            "decision": {
+                "decision": "REBALANCE",
+                "candidate_rebalance_plan": {"005930": 0.05},
+                "summary": "리밸런싱 초안",
+                "reasoning": "거래 초안이 있습니다.",
+                "user_notification": {"action_required": False},
+            }
+        },
+        approval_required=True,
+    )
+
+    assert final["requires_approval"] is True
+    assert final["branch"] == "USER_APPROVAL_REQUIRED"
 
 
 def test_inline_knowledge_base_disables_ingest_refresh():

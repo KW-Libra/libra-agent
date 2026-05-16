@@ -2417,6 +2417,34 @@ class JudgeOrchestrator:
         trigger_event: TriggerEvent | None,
         candidate_plan: Mapping[str, float] | None = None,
     ) -> dict[str, Any]:
+        normalized_plan = self._draft_candidate_plan(
+            portfolio=portfolio,
+            trigger=trigger,
+            trigger_event=trigger_event,
+            candidate_plan=candidate_plan,
+        )
+        if not portfolio.holdings and not normalized_plan:
+            normalized = {
+                "action": "FINALIZE_DOMAIN_REVIEW",
+                "reason": (
+                    "보유 종목과 후보 리밸런싱 초안이 없어 도메인 심의 대상이 없습니다. "
+                    "유동성·기술·체결·세금 검토는 구체적인 종목 또는 주문 후보가 생긴 뒤 수행합니다."
+                ),
+                "candidate_rebalance_plan": {},
+                "layer": "domain",
+            }
+            publish_debate_event(
+                "judge_action",
+                _compact_judge_action_event(
+                    normalized,
+                    layer="domain",
+                    turn_number=len(responses) + 1,
+                    called_agents=[canonical_agent_id(item) for item in called_agents],
+                    response_count=len(responses),
+                ),
+            )
+            return normalized
+
         payload = {
             "query": query,
             "trigger": trigger,
@@ -2428,7 +2456,7 @@ class JudgeOrchestrator:
                 for agent_id in called_agents
                 if canonical_agent_id(agent_id) in DOMAIN_ROUTING_AGENT_IDS
             ],
-            "candidate_rebalance_plan": dict(candidate_plan or {}),
+            "candidate_rebalance_plan": dict(normalized_plan),
             "portfolio": {
                 "holdings": [
                     {
@@ -3260,6 +3288,8 @@ class JudgeOrchestrator:
                         "Keep summary concise and write all natural-language text only in Korean.",
                         "Do not use Japanese kana in summary, reasoning, notifications, or options.",
                         "If no trade is justified, return an empty candidate_rebalance_plan object.",
+                        "Do not translate zero local evidence, empty caches, QUIET, or DIRECT_ANSWER_UNAVAILABLE into a claim that the market is quiet or stable.",
+                        "If holdings and candidate_rebalance_plan are both empty, state that there is no executable trade and an initial portfolio candidate is needed before investment review.",
                         "A direct_indexing candidate_rebalance_plan is a target-vs-current drift draft, not a free-form heuristic.",
                         "If a direct_indexing candidate plan exists and profit/cost agents did not block it, REBALANCE may be justified even when disclosure/news are quiet.",
                     ],
