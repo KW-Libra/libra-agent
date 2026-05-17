@@ -25,6 +25,7 @@ from libra_agent.libra_runtime import (
     LLMAgent,
     LocalKnowledgeBase,
 )
+from libra_agent.runtime.debate_events import debate_event_publisher
 
 
 class FakeChatClient:
@@ -818,6 +819,59 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
         self.assertEqual(action["action"], "FINALIZE")
         self.assertNotIn("유지", action["reason"])
         self.assertIn("초기 포트폴리오 후보", action["reason"])
+
+    def test_core_routing_fast_finalizes_empty_portfolio_check_without_llm(self) -> None:
+        events: list[tuple[str, dict[str, object]]] = []
+        token = debate_event_publisher.set(lambda event, payload: events.append((event, payload)))
+        try:
+            action = JudgeOrchestrator(client=FailingChatClient())._judge_next_action(
+                query="현재 포트폴리오를 점검하고 유지/조정 필요성을 판단해줘.",
+                portfolio=_empty_cash_portfolio(),
+                responses=[],
+                called_agents=[],
+                depth="shallow",
+                trigger="pull",
+                trigger_event=None,
+                candidate_plan={},
+            )
+        finally:
+            debate_event_publisher.reset(token)
+
+        self.assertEqual(action["action"], "FINALIZE")
+        self.assertEqual(action["candidate_rebalance_plan"], {})
+        self.assertNotIn("유지", action["reason"])
+        self.assertIn("초기 포트폴리오 후보", action["reason"])
+        self.assertTrue(
+            any(
+                event == "llm_skipped" and payload.get("phase") == "core_routing"
+                for event, payload in events
+            )
+        )
+        self.assertFalse(
+            any(
+                event == "llm_prompt" and payload.get("phase") == "core_routing"
+                for event, payload in events
+            )
+        )
+
+    def test_core_routing_does_not_fast_finalize_empty_portfolio_candidate_request(self) -> None:
+        orchestrator = JudgeOrchestrator(
+            client=FakeChatClient(_call("disclosure", "초기 후보 구성을 위해 공시를 확인합니다."))
+        )
+
+        action = orchestrator._judge_next_action(
+            query="초기 포트폴리오 후보를 구성해줘.",
+            portfolio=_empty_cash_portfolio(),
+            responses=[],
+            called_agents=[],
+            depth="shallow",
+            trigger="pull",
+            trigger_event=None,
+            candidate_plan={},
+        )
+
+        self.assertEqual(action["action"], "CALL_AGENT")
+        self.assertEqual(action["agent_id"], "disclosure")
 
     def test_empty_portfolio_no_trade_clears_follow_up_at(self) -> None:
         final_payload = {

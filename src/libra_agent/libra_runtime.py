@@ -2456,6 +2456,36 @@ class JudgeOrchestrator:
         candidate_plan: Mapping[str, float] | None = None,
     ) -> dict[str, Any]:
         already_called = [canonical_agent_id(item) for item in called_agents]
+        fast_finalize = self._empty_portfolio_fast_finalize_action(
+            query=query,
+            portfolio=portfolio,
+            responses=responses,
+            trigger=trigger,
+            trigger_event=trigger_event,
+            candidate_plan=candidate_plan,
+        )
+        if fast_finalize is not None:
+            publish_llm_skipped(
+                actor="judge",
+                phase="core_routing",
+                reason="빈 포트폴리오 점검 fast-path로 Core 라우팅 LLM 호출을 생략합니다.",
+                context={
+                    "holdings": 0,
+                    "candidate_rebalance_plan": {},
+                    "called_agents": list(called_agents),
+                },
+            )
+            publish_debate_event(
+                "judge_action",
+                _compact_judge_action_event(
+                    fast_finalize,
+                    layer="core",
+                    turn_number=len(responses) + 1,
+                    called_agents=already_called,
+                    response_count=len(responses),
+                ),
+            )
+            return fast_finalize
         valid_next_agents = [
             agent_id
             for agent_id in self._routing_agent_ids()
@@ -2574,6 +2604,66 @@ class JudgeOrchestrator:
             ),
         )
         return normalized
+
+    def _empty_portfolio_fast_finalize_action(
+        self,
+        *,
+        query: str,
+        portfolio: PortfolioSnapshot,
+        responses: list[AgentResponse],
+        trigger: str,
+        trigger_event: TriggerEvent | None,
+        candidate_plan: Mapping[str, float] | None,
+    ) -> dict[str, Any] | None:
+        if (
+            trigger != "pull"
+            or trigger_event is not None
+            or responses
+            or portfolio.holdings
+            or candidate_plan
+        ):
+            return None
+        lowered = query.casefold()
+        exploration_tokens = (
+            "초기",
+            "후보",
+            "구성",
+            "설계",
+            "추천",
+            "관심",
+            "종목",
+            "시장",
+            "뉴스",
+            "공시",
+            "기회",
+            "탐색",
+            "찾",
+            "만들",
+            "편입",
+            "매수",
+            "매도",
+            "리밸런싱",
+            "리밸런스",
+            "비중",
+            "분산",
+        )
+        if any(token in lowered for token in exploration_tokens):
+            return None
+        check_tokens = ("점검", "유지", "조정", "리뷰", "확인", "판단")
+        if not any(token in lowered for token in check_tokens):
+            return None
+        return {
+            "action": "FINALIZE",
+            "reason": (
+                "보유 종목과 후보 리밸런싱 초안이 없어 실행 가능한 매수·매도 조정이 없습니다. "
+                "초기 포트폴리오 후보가 생성된 뒤 투자 검토를 진행합니다."
+            ),
+            "note": (
+                "빈 포트폴리오의 단순 유지·조정 점검 요청이므로 공시·뉴스 조회 없이 종료합니다. "
+                "시장 스캔이나 초기 후보 생성을 명시한 요청은 별도 정보 수집 경로로 처리합니다."
+            ),
+            "candidate_rebalance_plan": {},
+        }
 
     def _repair_judge_action(
         self,
