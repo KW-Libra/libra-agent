@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 
 from libra_agent.libra.portfolio_sources.kis import (
     KIS_DEFAULT_CONFIG_PATH,
@@ -22,6 +24,11 @@ FIXTURE_ORDERS: tuple[tuple[str, int], ...] = (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Place KIS demo-only domestic market buy orders.")
+    parser.add_argument(
+        "--env-file",
+        default=".env.kis.paper.local",
+        help="Local KEY=VALUE file for LIBRA_KIS_* values. Missing files are ignored.",
+    )
     parser.add_argument(
         "--kis-config",
         default=str(KIS_DEFAULT_CONFIG_PATH),
@@ -49,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _load_env_file(Path(args.env_file))
     orders = _parse_orders(args.order)
     if args.fixture:
         orders.extend(FIXTURE_ORDERS)
@@ -93,6 +101,30 @@ def _parse_orders(raw_orders: list[str]) -> list[tuple[str, int]]:
             raise SystemExit(f"Order quantity must be positive: {raw}")
         orders.append((ticker.strip(), quantity))
     return orders
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line.removeprefix("export ").strip()
+        name, value = line.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if not name:
+            continue
+        if (
+            len(value) >= 2
+            and value[0] == value[-1]
+            and value[0] in {'"', "'"}
+        ):
+            value = value[1:-1]
+        os.environ.setdefault(name, value)
 
 
 if __name__ == "__main__":
