@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END
 
 from libra_agent.runtime.graph import (
     _final_decision_from_agent_result,
     _knowledge_base_from_state,
     _knowledge_snapshot_for_state,
+    _route_after_final_judge,
     build_graph,
 )
 
@@ -70,6 +72,14 @@ def test_actionable_rebalance_requires_approval_when_human_review_enabled():
 
     assert final["requires_approval"] is True
     assert final["branch"] == "USER_APPROVAL_REQUIRED"
+
+
+def test_route_after_final_judge_skips_human_review_when_no_approval():
+    assert _route_after_final_judge({"final_decision": {"requires_approval": False}}) == END
+
+
+def test_route_after_final_judge_enters_human_review_when_required():
+    assert _route_after_final_judge({"final_decision": {"requires_approval": True}}) == "human_review"
 
 
 def test_inline_knowledge_base_disables_ingest_refresh():

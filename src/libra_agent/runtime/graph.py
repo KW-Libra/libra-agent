@@ -147,6 +147,9 @@ async def _node_final_judge(state: GraphState) -> dict[str, Any]:
             "agent_result": result,
             "compliance_after": {"can_proceed": True, "violations": [], "state": "AFTER"},
             "final_decision": decision,
+            "run_status": "awaiting_human_review"
+            if decision.get("requires_approval")
+            else "completed",
         }
 
     portfolio_payload = state.get("portfolio")
@@ -178,6 +181,7 @@ async def _node_final_judge(state: GraphState) -> dict[str, Any]:
             "trades": [],
             "reasoning": "(stub) — 다음 단계에서 채움",
         },
+        "run_status": "completed",
     }
 
 
@@ -224,6 +228,13 @@ def _normalize_approval_response(value: Any) -> dict[str, Any]:
             "metadata": value.get("metadata"),
         }
     return {"approved": bool(value), "decision": None, "option_index": None}
+
+
+def _route_after_final_judge(state: GraphState) -> str:
+    final_decision = state.get("final_decision") or {}
+    if isinstance(final_decision, Mapping) and final_decision.get("requires_approval"):
+        return "human_review"
+    return END
 
 
 def _has_portfolio_holdings(value: Any) -> bool:
@@ -432,7 +443,7 @@ def build_graph(checkpointer=None):
     builder.add_edge("compliance_before", "round1")
     builder.add_edge("round1", "mediator")
     builder.add_edge("mediator", "final_judge")
-    builder.add_edge("final_judge", "human_review")
+    builder.add_conditional_edges("final_judge", _route_after_final_judge)
     builder.add_edge("human_review", END)
 
     return builder.compile(checkpointer=checkpointer or get_checkpointer())
