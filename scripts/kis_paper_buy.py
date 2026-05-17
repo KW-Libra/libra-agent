@@ -31,8 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--kis-config",
-        default=str(KIS_DEFAULT_CONFIG_PATH),
-        help="Path to kis_devlp.yaml. Values can also come from LIBRA_KIS_* env vars.",
+        default=None,
+        help=(
+            "Optional path to kis_devlp.yaml. Defaults to LIBRA_KIS_* env vars "
+            f"in --env-file; legacy default path is {KIS_DEFAULT_CONFIG_PATH}."
+        ),
     )
     parser.add_argument("--kis-app-key", help="Override KIS paper app key")
     parser.add_argument("--kis-app-secret", help="Override KIS paper app secret")
