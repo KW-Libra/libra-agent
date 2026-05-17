@@ -132,6 +132,54 @@ async def test_empty_portfolio_fast_path_stream_skips_empty_workflow_nodes():
     ]
 
 
+async def test_empty_portfolio_fast_path_debate_event_sequence_is_stable():
+    graph = build_graph(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "test-empty-fast-path-debate-events"}}
+    debate_events: list[tuple[str, dict[str, object]]] = []
+    token = debate_event_publisher.set(
+        lambda event, payload: debate_events.append((event, payload))
+    )
+
+    try:
+        result = await graph.ainvoke(
+            {
+                "thread_id": "test-empty-fast-path-debate-events",
+                "trigger": "pull",
+                "query": "현재 포트폴리오를 점검하고 유지/조정 필요성을 판단해줘.",
+                "portfolio": {"holdings": []},
+                "enable_human_interrupts": True,
+            },
+            config=config,
+        )
+    finally:
+        debate_event_publisher.reset(token)
+
+    assert result["final_decision"] == {
+        "decision": "DEFER",
+        "branch": "defer",
+        "requires_approval": False,
+        "trades": {},
+        "reasoning": "현재는 실행할 매매가 없으므로 사용자 승인은 필요하지 않습니다. 투자 검토를 시작하려면 초기 포트폴리오 후보 구성이 먼저 필요합니다.",
+        "summary": "포트폴리오가 비어 있고 후보 리밸런싱 초안도 없어 지금 실행할 매수·매도 조정은 없습니다.",
+        "confidence": 0.95,
+        "urgency": "defer",
+    }
+    assert [event for event, _payload in debate_events] == [
+        "llm_skipped",
+        "judge_action",
+        "llm_skipped",
+        "final_decision_draft",
+        "human_review_skipped",
+    ]
+    assert debate_events[0][1]["phase"] == "core_routing"
+    assert debate_events[1][1]["action"] == "FINALIZE"
+    assert debate_events[1][1]["called_agents"] == []
+    assert debate_events[2][1]["phase"] == "final_decision_final"
+    assert debate_events[3][1]["decision"] == "DEFER"
+    assert debate_events[3][1]["requires_approval"] is False
+    assert debate_events[4][1]["reason"] == "no_action_required"
+
+
 def test_actionable_rebalance_requires_approval_when_human_review_enabled():
     final = _final_decision_from_agent_result(
         {
