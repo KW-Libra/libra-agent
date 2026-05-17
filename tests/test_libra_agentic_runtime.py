@@ -819,6 +819,48 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
         self.assertNotIn("유지", action["reason"])
         self.assertIn("초기 포트폴리오 후보", action["reason"])
 
+    def test_empty_portfolio_no_trade_clears_follow_up_at(self) -> None:
+        final_payload = {
+            "decision": "DEFER",
+            "summary": "초기 포트폴리오 후보가 필요합니다.",
+            "confidence": 0.95,
+            "urgency": "defer",
+            "reasoning": "현재는 실행할 매매가 없으므로 사용자 승인은 필요하지 않습니다.",
+            "candidate_rebalance_plan": {},
+            "needs_trade_evaluation": False,
+            "follow_up_at": "2025-05-01T09:00:00+00:00",
+            "feedback_checkpoint": None,
+            "user_notification": {
+                "level": "info",
+                "body": "초기 포트폴리오 후보가 필요합니다.",
+                "action_required": False,
+                "estimated_followup": "2025-05-01T09:00:00+00:00",
+            },
+        }
+        orchestrator = JudgeOrchestrator(
+            client=RoutingScriptChatClient(
+                core_actions=[
+                    _call("disclosure", "빈 포트폴리오의 1차 근거로 공시를 확인합니다."),
+                    _finalize("실행 가능한 거래가 없어 초기 포트폴리오 후보가 필요합니다."),
+                ],
+                final_payload=final_payload,
+            )
+        )
+
+        result = orchestrator.run(
+            query="현재 포트폴리오를 점검하고 유지/조정 필요성을 판단해줘.",
+            portfolio=_empty_cash_portfolio(),
+            knowledge_base=LocalKnowledgeBase(events=[], documents=[], source_paths={}),
+            depth="shallow",
+            trigger="pull",
+        )
+
+        decision = result["decision"]
+        self.assertEqual(decision["decision"], "DEFER")
+        self.assertIsNone(decision["follow_up_at"])
+        self.assertIsNone(decision["user_notification"]["estimated_followup"])
+        self.assertFalse(decision["user_notification"]["action_required"])
+
     def test_judge_phase_rejects_japanese_kana_payload(self) -> None:
         orchestrator = JudgeOrchestrator(
             client=FakeChatClient(

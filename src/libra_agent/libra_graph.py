@@ -609,7 +609,8 @@ class LibraLangGraphRuntime:
                 )
                 decision.options = []
                 decision.auto_safeguards = {}
-        if not portfolio.holdings and not candidate_plan:
+        empty_portfolio_no_trade = not portfolio.holdings and not candidate_plan
+        if empty_portfolio_no_trade:
             decision.decision = DecisionType.DEFER
             decision.urgency = Urgency.DEFER
             decision.summary = (
@@ -623,6 +624,7 @@ class LibraLangGraphRuntime:
             )
             decision.candidate_rebalance_plan = {}
             decision.needs_trade_evaluation = False
+            decision.follow_up_at = None
             decision.feedback_checkpoint = None
             decision.options = []
             decision.user_notification = UserNotification(
@@ -630,7 +632,7 @@ class LibraLangGraphRuntime:
                 body=decision.summary,
                 action_required=False,
                 kind="empty_portfolio_needs_candidate",
-                estimated_followup=decision.follow_up_at,
+                estimated_followup=None,
                 sent_at=self.coordinator._notification_timestamp(),
             )
         self.coordinator._apply_push_guardrails(
@@ -656,7 +658,11 @@ class LibraLangGraphRuntime:
                 "domain_consensus": domain_consensus,
             }
             decision = apply_compliance_veto(decision, domain_responses)
-        if not decision.follow_up_at and decision.decision.value == "DEFER":
+        if (
+            not empty_portfolio_no_trade
+            and not decision.follow_up_at
+            and decision.decision.value == "DEFER"
+        ):
             decision.follow_up_at = self.coordinator._default_follow_up_at(
                 query=state["query"], responses=responses
             )
@@ -664,11 +670,13 @@ class LibraLangGraphRuntime:
             decision.feedback_checkpoint = self.coordinator._default_feedback_checkpoint()
         decision.follow_up_at = self.coordinator._sanitize_future_timestamp(
             decision.follow_up_at,
-            default=self.coordinator._default_follow_up_at(
-                query=state["query"], responses=responses
-            )
-            if decision.decision.value == "DEFER"
-            else None,
+            default=None
+            if empty_portfolio_no_trade
+            else (
+                self.coordinator._default_follow_up_at(query=state["query"], responses=responses)
+                if decision.decision.value == "DEFER"
+                else None
+            ),
         )
         decision.feedback_checkpoint = self.coordinator._sanitize_future_timestamp(
             decision.feedback_checkpoint,

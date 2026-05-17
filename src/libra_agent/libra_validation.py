@@ -632,7 +632,9 @@ def sanitize_judge_payload(
         "action_required": action_required,
         "kind": _clean_text(notification.get("kind"), default="final_decision", limit=40)
         or "final_decision",
-        "estimated_followup": _datetime_string(notification.get("estimated_followup")),
+        "estimated_followup": None
+        if empty_portfolio_no_trade
+        else _datetime_string(notification.get("estimated_followup")),
         "sent_at": _datetime_string(notification.get("sent_at")),
     }
 
@@ -654,7 +656,9 @@ def sanitize_judge_payload(
         "reasoning": reasoning,
         "candidate_rebalance_plan": candidate_plan,
         "needs_trade_evaluation": needs_trade_evaluation,
-        "follow_up_at": _datetime_string(raw.get("follow_up_at")),
+        "follow_up_at": None
+        if empty_portfolio_no_trade
+        else _datetime_string(raw.get("follow_up_at")),
         "feedback_checkpoint": None
         if empty_portfolio_no_trade
         else _datetime_string(raw.get("feedback_checkpoint")),

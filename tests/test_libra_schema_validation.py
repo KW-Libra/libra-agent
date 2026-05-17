@@ -267,11 +267,13 @@ class LibraSchemaValidationTests(unittest.TestCase):
                 "reasoning": "현재는 실행할 매매가 없으므로 사용자 결정이 필요합니다.",
                 "candidate_rebalance_plan": {},
                 "needs_trade_evaluation": True,
+                "follow_up_at": "2025-05-01T09:00:00+00:00",
                 "feedback_checkpoint": "2026-05-17T09:00:00+09:00",
                 "user_notification": {
                     "level": "push",
                     "body": "승인이 필요합니다.",
                     "action_required": True,
+                    "estimated_followup": "2025-05-01T09:00:00+00:00",
                 },
                 "options": ["승인", "거절"],
             },
@@ -285,9 +287,11 @@ class LibraSchemaValidationTests(unittest.TestCase):
         self.assertEqual(payload["urgency"], "defer")
         self.assertEqual(payload["candidate_rebalance_plan"], {})
         self.assertFalse(payload["needs_trade_evaluation"])
+        self.assertIsNone(payload["follow_up_at"])
         self.assertIsNone(payload["feedback_checkpoint"])
         self.assertEqual(payload["user_notification"]["level"], "info")
         self.assertFalse(payload["user_notification"]["action_required"])
+        self.assertIsNone(payload["user_notification"]["estimated_followup"])
         self.assertEqual(payload["options"], [])
 
     def test_judge_phase_publishes_sanitized_empty_portfolio_decision(self) -> None:
@@ -304,7 +308,12 @@ class LibraSchemaValidationTests(unittest.TestCase):
                         "reasoning": "현재는 실행할 매매가 없으므로 사용자 결정이 필요합니다.",
                         "candidate_rebalance_plan": {},
                         "needs_trade_evaluation": False,
-                        "user_notification": {"level": "push", "action_required": True},
+                        "follow_up_at": "2025-05-01T09:00:00+00:00",
+                        "user_notification": {
+                            "level": "push",
+                            "action_required": True,
+                            "estimated_followup": "2025-05-01T09:00:00+00:00",
+                        },
                     }
                 )
             )._judge_phase(
@@ -327,6 +336,8 @@ class LibraSchemaValidationTests(unittest.TestCase):
         output = response_events[-1][1]["output"]
         self.assertIsInstance(output, dict)
         self.assertEqual(output["decision"], "DEFER")
+        self.assertIsNone(output["follow_up_at"])
+        self.assertIsNone(output["user_notification"]["estimated_followup"])
         self.assertNotIn("사용자 결정이 필요", str(output.get("reasoning")))
 
     def test_empty_local_context_uses_consistent_empty_schema(self) -> None:

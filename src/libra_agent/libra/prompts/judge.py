@@ -94,6 +94,7 @@ JUDGE_PHASE_SYSTEM_PROMPT = (
     "On a calm pull check with no meaningful supplied signal and no trade draft, prefer HOLD over DEFER. "
     "If holdings and candidate_rebalance_plan are both empty, do not ask for approval; state no executable trade and that an initial portfolio candidate is needed. "
     "When there is no executable trade, do not write that user approval or a user decision is required. "
+    "When there is no executable trade and no action is required, set follow_up_at to null. "
     "Never describe zero local evidence or an empty cache as a quiet or stable market. "
     "Write every natural-language value only in Korean. Do not use Japanese kana. "
     "English is allowed only for enum values, JSON keys, tickers, URLs, and source names."

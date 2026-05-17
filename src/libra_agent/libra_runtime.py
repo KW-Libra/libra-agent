@@ -3523,6 +3523,7 @@ class JudgeOrchestrator:
                         "If no trade is justified, return an empty candidate_rebalance_plan object.",
                         "Do not translate zero local evidence, empty caches, QUIET, or DIRECT_ANSWER_UNAVAILABLE into a claim that the market is quiet or stable.",
                         "If holdings and candidate_rebalance_plan are both empty, state that there is no executable trade and an initial portfolio candidate is needed before investment review.",
+                        "When there is no executable trade and no action is required, set follow_up_at to null.",
                         "A direct_indexing candidate_rebalance_plan is a target-vs-current drift draft, not a free-form heuristic.",
                         "If a direct_indexing candidate plan exists and profit/cost agents did not block it, REBALANCE may be justified even when disclosure/news are quiet.",
                     ],
