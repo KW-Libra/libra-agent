@@ -82,6 +82,39 @@ def _knowledge_base_with_disclosure() -> LocalKnowledgeBase:
     )
 
 
+def _market_wide_disclosure_knowledge() -> LocalKnowledgeBase:
+    return LocalKnowledgeBase.from_state_payload(
+        {
+            "events": [],
+            "documents": [
+                {
+                    "doc_id": "doc-market-1",
+                    "doc_type": "DISCLOSURE",
+                    "title": "프로브잇 기타시장안내",
+                    "body": "분기보고서 미제출 관련 상장폐지 절차 미진행 안내",
+                    "publisher": "DART",
+                    "source_name": "dart",
+                    "region": "KR",
+                    "published_at": "2026-05-15T09:00:00+09:00",
+                    "matched_holdings": [],
+                },
+                {
+                    "doc_id": "doc-market-2",
+                    "doc_type": "DISCLOSURE",
+                    "title": "피씨엘 기타시장안내",
+                    "body": "관리종목 지정사유 추가 관련 시장조치사항 안내",
+                    "publisher": "DART",
+                    "source_name": "dart",
+                    "region": "KR",
+                    "published_at": "2026-05-15T09:30:00+09:00",
+                    "matched_holdings": [],
+                },
+            ],
+            "source_paths": {},
+        }
+    )
+
+
 class LibraSchemaValidationTests(unittest.TestCase):
     def test_disclosure_agent_exposes_prompt_profile(self) -> None:
         self.assertIs(DisclosureAgent.prompt_profile, DISCLOSURE_PROMPT_PROFILE)
@@ -185,6 +218,54 @@ class LibraSchemaValidationTests(unittest.TestCase):
         self.assertEqual(response.verdict, AgentVerdict.PARTIAL_ANSWER)
         self.assertEqual(response.confidence, 0.35)
 
+    def test_llm_agent_keeps_empty_portfolio_observation_counts_without_fallback(self) -> None:
+        events: list[tuple[str, dict[str, object]]] = []
+        token = debate_event_publisher.set(lambda event, payload: events.append((event, payload)))
+        try:
+            response = LLMAgent(
+                agent_id="disclosure",
+                client=FakeChatClient(
+                    {
+                        "verdict": "DIRECT_ANSWER_UNAVAILABLE",
+                        "evidence": {
+                            "found_count": 0,
+                            "items": [],
+                            "upcoming_disclosures": [],
+                        },
+                        "direction": 0.0,
+                        "strength": 0.0,
+                        "urgency": "defer",
+                        "confidence": 0.0,
+                        "reasoning_for_judge_agent": (
+                            "로컬 캐시에서 공시를 확인했으나 현재 포트폴리오가 비어 있어 "
+                            "보유 종목과 매칭되는 공시가 없습니다."
+                        ),
+                        "limits_acknowledged": "종목 편입 후 재점검이 필요합니다.",
+                    }
+                ),
+            ).run(
+                query="포트폴리오 관련 신규 공시와 실적 신호를 요약해줘.",
+                turn_number=1,
+                portfolio=_empty_portfolio(),
+                knowledge_base=_market_wide_disclosure_knowledge(),
+                depth="shallow",
+            )
+        finally:
+            debate_event_publisher.reset(token)
+
+        self.assertEqual(response.verdict, AgentVerdict.DIRECT_ANSWER_UNAVAILABLE)
+        self.assertEqual(response.confidence, 0.2)
+        self.assertEqual(response.evidence["found_count"], 0)
+        self.assertEqual(response.evidence["observed_count"], 2)
+        self.assertEqual(response.evidence["portfolio_relevant_count"], 0)
+        self.assertFalse(response.evidence["usable_for_trade_decision"])
+        self.assertFalse(
+            any(
+                event == "llm_skipped" and payload.get("phase") == "agent_response_fallback"
+                for event, payload in events
+            )
+        )
+
     def test_llm_agent_falls_back_to_local_evidence_when_llm_fails(self) -> None:
         events: list[tuple[str, dict[str, object]]] = []
         token = debate_event_publisher.set(lambda event, payload: events.append((event, payload)))
@@ -202,6 +283,9 @@ class LibraSchemaValidationTests(unittest.TestCase):
         self.assertEqual(response.verdict, AgentVerdict.PARTIAL_ANSWER)
         self.assertGreaterEqual(response.confidence, 0.2)
         self.assertEqual(response.evidence["found_count"], 1)
+        self.assertEqual(response.evidence["observed_count"], 1)
+        self.assertEqual(response.evidence["portfolio_relevant_count"], 1)
+        self.assertTrue(response.evidence["usable_for_trade_decision"])
         self.assertIn("자동 요약", response.reasoning_for_judge_agent)
         self.assertTrue(
             any(
@@ -209,6 +293,26 @@ class LibraSchemaValidationTests(unittest.TestCase):
                 for event, payload in events
             )
         )
+
+    def test_llm_agent_fallback_separates_observed_and_portfolio_relevant_counts(self) -> None:
+        events: list[tuple[str, dict[str, object]]] = []
+        token = debate_event_publisher.set(lambda event, payload: events.append((event, payload)))
+        try:
+            response = LLMAgent(agent_id="disclosure", client=FailingChatClient()).run(
+                query="포트폴리오 관련 신규 공시와 실적 신호를 요약해줘.",
+                turn_number=1,
+                portfolio=_empty_portfolio(),
+                knowledge_base=_market_wide_disclosure_knowledge(),
+                depth="shallow",
+            )
+        finally:
+            debate_event_publisher.reset(token)
+
+        self.assertEqual(response.verdict, AgentVerdict.PARTIAL_ANSWER)
+        self.assertEqual(response.evidence["found_count"], 0)
+        self.assertEqual(response.evidence["observed_count"], 2)
+        self.assertEqual(response.evidence["portfolio_relevant_count"], 0)
+        self.assertFalse(response.evidence["usable_for_trade_decision"])
         self.assertTrue(
             any(
                 event == "llm_skipped" and payload.get("phase") == "agent_response_fallback"
@@ -366,6 +470,9 @@ class LibraSchemaValidationTests(unittest.TestCase):
             response.evidence,
             {
                 "found_count": 0,
+                "observed_count": 0,
+                "portfolio_relevant_count": 0,
+                "usable_for_trade_decision": False,
                 "items": [],
                 "upcoming_disclosures": [],
             },

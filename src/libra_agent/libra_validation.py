@@ -244,11 +244,22 @@ def _sanitize_disclosure_evidence(value: Any, alias_map: Mapping[str, str]) -> d
             }
         )
 
+    has_relevance_count = "portfolio_relevant_count" in payload
     found_count = _as_int(payload.get("found_count"), len(items))
-    if found_count < len(items):
+    if not has_relevance_count and found_count < len(items):
         found_count = len(items)
+    observed_count = max(found_count, _as_int(payload.get("observed_count"), found_count))
+    portfolio_relevant_count = _as_int(payload.get("portfolio_relevant_count"), found_count)
+    if portfolio_relevant_count > observed_count:
+        portfolio_relevant_count = observed_count
     return {
         "found_count": found_count,
+        "observed_count": observed_count,
+        "portfolio_relevant_count": portfolio_relevant_count,
+        "usable_for_trade_decision": _as_bool(
+            payload.get("usable_for_trade_decision"),
+            default=portfolio_relevant_count > 0,
+        ),
         "items": items,
         "upcoming_disclosures": upcoming,
     }
@@ -347,8 +358,21 @@ def _sanitize_news_evidence(value: Any, alias_map: Mapping[str, str]) -> dict[st
 
     cross_check_count = max(0, _as_int(payload.get("cross_check_count"), len(company_findings)))
     macro_findings = _sanitize_jsonish(payload.get("macro_findings"), max_depth=2)
+    observed_count = max(0, _as_int(payload.get("observed_count"), cross_check_count))
+    portfolio_relevant_count = _as_int(
+        payload.get("portfolio_relevant_count"),
+        len([key for key in company_findings if key != "portfolio"]),
+    )
+    if portfolio_relevant_count > observed_count:
+        portfolio_relevant_count = observed_count
     return {
         "sub_role": sub_role,
+        "observed_count": observed_count,
+        "portfolio_relevant_count": portfolio_relevant_count,
+        "usable_for_trade_decision": _as_bool(
+            payload.get("usable_for_trade_decision"),
+            default=portfolio_relevant_count > 0,
+        ),
         "company_findings": company_findings,
         "macro_findings": macro_findings,
         "source_reliability": source_reliability,

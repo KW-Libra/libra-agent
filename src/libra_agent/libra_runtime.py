@@ -1143,6 +1143,7 @@ class LLMAgent:
         response.confidence = clamp(response.confidence, 0.0, 1.0)
         response.depth_used = depth
         response.tools_called = knowledge_slice.tools_called
+        self._annotate_observation_counts(response, knowledge_slice)
         if not response.evidence:
             response.evidence = {
                 "events": [event.to_dict() for event in knowledge_slice.events[:4]],
@@ -1155,6 +1156,15 @@ class LLMAgent:
         ):
             # A zero confidence with cited evidence is a malformed scalar, not an LLM outage.
             response.confidence = 0.35
+        elif (
+            response.confidence <= 0
+            and response.reasoning_for_judge_agent.strip()
+            and self._observed_count(knowledge_slice) > 0
+        ):
+            # The agent may correctly report zero portfolio-relevant evidence while still
+            # using local observations. Keep the low confidence but do not treat it as an
+            # LLM outage that needs a fallback summary.
+            response.confidence = 0.2
         if not response.focus_tickers:
             focus_tickers = set()
             for event in knowledge_slice.events:
@@ -1234,16 +1244,25 @@ class LLMAgent:
     ) -> AgentResponse:
         event_count = len(knowledge_slice.events)
         document_count = len(knowledge_slice.documents)
+        observed_count = self._observed_count(knowledge_slice)
+        portfolio_relevant_count = self._portfolio_relevant_count(knowledge_slice)
         has_evidence = bool(event_count or document_count)
         evidence = self._fallback_evidence(knowledge_slice)
+        fallback_message = (
+            "LLM 응답이 검증 기준을 통과하지 못해 로컬 근거 기반 자동 요약 폴백을 사용합니다."
+            if "remained sparse" in reason
+            else "LLM 응답 실패로 로컬 근거 기반 자동 요약 폴백을 사용합니다."
+        )
         publish_llm_skipped(
             actor=self.agent_id,
             phase="agent_response_fallback",
-            reason="LLM 응답 실패로 로컬 근거 기반 자동 요약 폴백을 사용합니다.",
+            reason=fallback_message,
             context={
                 "fallback_reason": reason,
                 "events": event_count,
                 "documents": document_count,
+                "observed_count": observed_count,
+                "portfolio_relevant_count": portfolio_relevant_count,
             },
         )
         if has_evidence:
@@ -1264,12 +1283,13 @@ class LLMAgent:
             "urgency": Urgency.DEFER.value,
             "confidence": 0.25 if has_evidence else 0.2,
             "reasoning_for_judge_agent": (
-                f"로컬 근거 이벤트 {event_count}건과 문서 {document_count}건은 확보했지만 "
-                "LLM 응답을 받지 못해 자동 요약으로 대체합니다. "
+                f"로컬 관찰은 이벤트 {event_count}건과 문서 {document_count}건이며, "
+                f"이 중 현재 포트폴리오와 직접 매칭되는 근거는 {portfolio_relevant_count}건입니다. "
+                "자동 요약 폴백으로 대체합니다. "
                 "최종 판단에는 근거 존재 여부와 에이전트 범위 제한만 참고하세요."
             ),
             "limits_acknowledged": (
-                f"LLM 호출 실패 폴백입니다. reason={reason}; "
+                f"{fallback_message} reason={reason}; "
                 "본문 해석이나 투자 방향성 평가는 수행하지 않았습니다."
             ),
             "references": [],
@@ -1288,7 +1308,31 @@ class LLMAgent:
         response.depth_used = depth
         return response
 
+    def _observed_count(self, knowledge_slice: KnowledgeSlice) -> int:
+        return len(knowledge_slice.events) + len(knowledge_slice.documents)
+
+    def _portfolio_relevant_count(self, knowledge_slice: KnowledgeSlice) -> int:
+        return sum(1 for event in knowledge_slice.events if event.matched_holdings) + sum(
+            1 for document in knowledge_slice.documents if document.matched_holdings
+        )
+
+    def _annotate_observation_counts(
+        self, response: AgentResponse, knowledge_slice: KnowledgeSlice
+    ) -> None:
+        if self.agent_id not in {"disclosure", "news", "report"}:
+            return
+        observed_count = self._observed_count(knowledge_slice)
+        portfolio_relevant_count = self._portfolio_relevant_count(knowledge_slice)
+        existing_observed = response.evidence.get("observed_count")
+        if isinstance(existing_observed, (int, float)):
+            observed_count = max(observed_count, int(existing_observed))
+        response.evidence["observed_count"] = observed_count
+        response.evidence["portfolio_relevant_count"] = portfolio_relevant_count
+        response.evidence["usable_for_trade_decision"] = portfolio_relevant_count > 0
+
     def _fallback_evidence(self, knowledge_slice: KnowledgeSlice) -> dict[str, Any]:
+        observed_count = self._observed_count(knowledge_slice)
+        portfolio_relevant_count = self._portfolio_relevant_count(knowledge_slice)
         if self.agent_id == "disclosure":
             items = [self._fallback_event_item(event) for event in knowledge_slice.events[:6]]
             if not items:
@@ -1297,7 +1341,10 @@ class LLMAgent:
                     for document in knowledge_slice.documents[:6]
                 ]
             return {
-                "found_count": len(knowledge_slice.events) + len(knowledge_slice.documents),
+                "found_count": portfolio_relevant_count,
+                "observed_count": observed_count,
+                "portfolio_relevant_count": portfolio_relevant_count,
+                "usable_for_trade_decision": portfolio_relevant_count > 0,
                 "items": items,
                 "upcoming_disclosures": [],
             }
@@ -1318,6 +1365,9 @@ class LLMAgent:
             ]
             return {
                 "sub_role": "mixed",
+                "observed_count": observed_count,
+                "portfolio_relevant_count": portfolio_relevant_count,
+                "usable_for_trade_decision": portfolio_relevant_count > 0,
                 "company_findings": {
                     "portfolio": {
                         "sentiment": "neutral",
@@ -3591,6 +3641,11 @@ class JudgeOrchestrator:
         if response.agent_id == "disclosure":
             evidence_summary = {
                 "found_count": evidence.get("found_count", 0),
+                "observed_count": evidence.get("observed_count", evidence.get("found_count", 0)),
+                "portfolio_relevant_count": evidence.get(
+                    "portfolio_relevant_count", evidence.get("found_count", 0)
+                ),
+                "usable_for_trade_decision": evidence.get("usable_for_trade_decision", False),
                 "upcoming_disclosures": evidence.get("upcoming_disclosures", []),
                 "items": [
                     {
@@ -3620,6 +3675,9 @@ class JudgeOrchestrator:
             company_findings = evidence.get("company_findings")
             evidence_summary = {
                 "sub_role": evidence.get("sub_role"),
+                "observed_count": evidence.get("observed_count", 0),
+                "portfolio_relevant_count": evidence.get("portfolio_relevant_count", 0),
+                "usable_for_trade_decision": evidence.get("usable_for_trade_decision", False),
                 "company_findings": list(company_findings.keys())[:4]
                 if isinstance(company_findings, Mapping)
                 else [],
