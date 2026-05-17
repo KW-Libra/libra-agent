@@ -51,6 +51,7 @@ Human review is enabled when either `enable_human_interrupts` or legacy `approva
 | `mediator_decision` | no | Governance v1 mediator selected Round 2 targets or skipped Round 2. |
 | `consensus_updated` | no | Consensus or domain-council aggregate state was recalculated. |
 | `final_decision_draft` | no | Final Judge produced a compact draft decision before HITL/completion. |
+| `human_review_skipped` | no | Human review was enabled for the run, but the final decision requires no approval. |
 | `interrupt_required` | yes | The graph checkpointed and waits for user input. |
 | `resume_received` | no | A resume request was accepted. |
 | `resume_ignored` | yes | A resume request was received but no interrupt is pending. |
@@ -140,6 +141,21 @@ These are workflow checkpoints, not final product UI labels.
 
 `mediator_decision`, `consensus_updated`, and `final_decision_draft` are compact timeline events.
 They are intentionally not the durable audit record; the durable payload remains `run_completed.agent_result`.
+
+`human_review_skipped`
+
+```json
+{
+  "reason": "no_action_required",
+  "message": "실행 가능한 거래가 없고 action_required=false이므로 human_review를 생략합니다.",
+  "decision": "DEFER",
+  "branch": "defer",
+  "action_required": false,
+  "requires_approval": false
+}
+```
+
+This event is emitted only when human review was requested but the final decision has no executable action and no approval requirement.
 
 `interrupt_required`
 

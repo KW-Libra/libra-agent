@@ -387,6 +387,22 @@ def _route_after_final_judge(state: GraphState) -> str:
     final_decision = state.get("final_decision") or {}
     if isinstance(final_decision, Mapping) and final_decision.get("requires_approval"):
         return "human_review"
+    if _human_review_enabled(state):
+        publish_debate_event(
+            "human_review_skipped",
+            {
+                "reason": "no_action_required",
+                "message": "실행 가능한 거래가 없고 action_required=false이므로 human_review를 생략합니다.",
+                "decision": final_decision.get("decision")
+                if isinstance(final_decision, Mapping)
+                else None,
+                "branch": final_decision.get("branch")
+                if isinstance(final_decision, Mapping)
+                else None,
+                "action_required": False,
+                "requires_approval": False,
+            },
+        )
     return END
 
 

@@ -24,6 +24,7 @@ def test_run_event_names_are_stable():
         "mediator_decision",
         "consensus_updated",
         "final_decision_draft",
+        "human_review_skipped",
         "interrupt_required",
         "resume_received",
         "resume_ignored",

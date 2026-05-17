@@ -27,6 +27,7 @@ class RunEventType(StrEnum):
     MEDIATOR_DECISION = "mediator_decision"
     CONSENSUS_UPDATED = "consensus_updated"
     FINAL_DECISION_DRAFT = "final_decision_draft"
+    HUMAN_REVIEW_SKIPPED = "human_review_skipped"
     INTERRUPT_REQUIRED = "interrupt_required"
     RESUME_RECEIVED = "resume_received"
     RESUME_IGNORED = "resume_ignored"

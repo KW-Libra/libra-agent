@@ -3,6 +3,7 @@ from __future__ import annotations
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END
 
+from libra_agent.runtime.debate_events import debate_event_publisher
 from libra_agent.runtime.graph import (
     _empty_portfolio_no_trade_decision_payload,
     _final_decision_from_agent_result,
@@ -89,20 +90,29 @@ async def test_empty_portfolio_fast_path_stream_skips_empty_workflow_nodes():
     graph = build_graph(checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": "test-empty-fast-path-events"}}
     starts: list[str] = []
+    human_review_skipped: list[dict[str, object]] = []
+    token = debate_event_publisher.set(
+        lambda event, payload: human_review_skipped.append(payload)
+        if event == "human_review_skipped"
+        else None
+    )
 
-    async for event in graph.astream_events(
-        {
-            "thread_id": "test-empty-fast-path-events",
-            "trigger": "pull",
-            "query": "현재 포트폴리오를 점검하고 유지/조정 필요성을 판단해줘.",
-            "portfolio": {"holdings": []},
-            "enable_human_interrupts": True,
-        },
-        config=config,
-        version="v2",
-    ):
-        if event.get("event") == "on_chain_start":
-            starts.append(str(event.get("name")))
+    try:
+        async for event in graph.astream_events(
+            {
+                "thread_id": "test-empty-fast-path-events",
+                "trigger": "pull",
+                "query": "현재 포트폴리오를 점검하고 유지/조정 필요성을 판단해줘.",
+                "portfolio": {"holdings": []},
+                "enable_human_interrupts": True,
+            },
+            config=config,
+            version="v2",
+        ):
+            if event.get("event") == "on_chain_start":
+                starts.append(str(event.get("name")))
+    finally:
+        debate_event_publisher.reset(token)
 
     assert "compliance_before" in starts
     assert "empty_portfolio_finalize" in starts
@@ -110,6 +120,16 @@ async def test_empty_portfolio_fast_path_stream_skips_empty_workflow_nodes():
     assert "mediator" not in starts
     assert "final_judge" not in starts
     assert "human_review" not in starts
+    assert human_review_skipped == [
+        {
+            "reason": "no_action_required",
+            "message": "실행 가능한 거래가 없고 action_required=false이므로 human_review를 생략합니다.",
+            "decision": "DEFER",
+            "branch": "defer",
+            "action_required": False,
+            "requires_approval": False,
+        }
+    ]
 
 
 def test_actionable_rebalance_requires_approval_when_human_review_enabled():
