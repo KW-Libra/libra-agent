@@ -57,6 +57,8 @@ from .libra_models import (
     UserNotification,
 )
 from .libra_validation import (
+    EMPTY_PORTFOLIO_NO_TRADE_REASONING,
+    EMPTY_PORTFOLIO_NO_TRADE_SUMMARY,
     sanitize_agent_evidence,
     sanitize_agent_response_payload,
     sanitize_judge_payload,
@@ -3629,6 +3631,25 @@ class JudgeOrchestrator:
         candidate_plan: Mapping[str, float] | None = None,
         drift_report: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        deterministic_payload = self._empty_portfolio_final_decision_payload(
+            portfolio=portfolio,
+            stage=stage,
+            candidate_plan=candidate_plan,
+            drift_report=drift_report,
+        )
+        if deterministic_payload is not None:
+            publish_llm_skipped(
+                actor="judge",
+                phase=f"final_decision_{stage}",
+                reason="빈 포트폴리오 no-trade fast-path로 최종 판단 LLM 호출을 생략합니다.",
+                context={
+                    "holdings": 0,
+                    "candidate_rebalance_plan": {},
+                    "direct_indexing": None,
+                },
+            )
+            return deterministic_payload
+
         response_payloads = [self._compact_agent_response(response) for response in responses]
         prompt = json.dumps(
             {
@@ -3662,7 +3683,8 @@ class JudgeOrchestrator:
                         "Do not use Japanese kana in summary, reasoning, notifications, or options.",
                         "If no trade is justified, return an empty candidate_rebalance_plan object.",
                         "Do not translate zero local evidence, empty caches, QUIET, or DIRECT_ANSWER_UNAVAILABLE into a claim that the market is quiet or stable.",
-                        "If holdings and candidate_rebalance_plan are both empty, state that there is no executable trade and an initial portfolio candidate is needed before investment review.",
+                        "The HOLD-over-DEFER preference does not apply when holdings and candidate_rebalance_plan are both empty.",
+                        "If holdings and candidate_rebalance_plan are both empty, decision must be DEFER and state that there is no executable trade and an initial portfolio candidate is needed before investment review.",
                         "When there is no executable trade and no action is required, set follow_up_at to null.",
                         "A direct_indexing candidate_rebalance_plan is a target-vs-current drift draft, not a free-form heuristic.",
                         "If a direct_indexing candidate plan exists and profit/cost agents did not block it, REBALANCE may be justified even when disclosure/news are quiet.",
@@ -3711,6 +3733,42 @@ class JudgeOrchestrator:
                 "Judge final-decision LLM returned an invalid or unsupported-language payload."
             )
         return payload
+
+    def _empty_portfolio_final_decision_payload(
+        self,
+        *,
+        portfolio: PortfolioSnapshot,
+        stage: str,
+        candidate_plan: Mapping[str, float] | None,
+        drift_report: Mapping[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if stage != "final" or portfolio.holdings or candidate_plan or drift_report:
+            return None
+        return sanitize_judge_payload(
+            {
+                "decision": DecisionType.DEFER.value,
+                "summary": EMPTY_PORTFOLIO_NO_TRADE_SUMMARY,
+                "confidence": 0.95,
+                "urgency": Urgency.DEFER.value,
+                "reasoning": EMPTY_PORTFOLIO_NO_TRADE_REASONING,
+                "candidate_rebalance_plan": {},
+                "needs_trade_evaluation": False,
+                "follow_up_at": None,
+                "feedback_checkpoint": None,
+                "user_notification": {
+                    "level": "info",
+                    "body": EMPTY_PORTFOLIO_NO_TRADE_SUMMARY,
+                    "action_required": False,
+                    "kind": "final_decision",
+                    "estimated_followup": None,
+                    "sent_at": None,
+                },
+                "options": [],
+                "auto_safeguards": {},
+            },
+            portfolio=portfolio,
+            stage=stage,
+        )
 
     def _compact_direct_indexing_context(
         self,
