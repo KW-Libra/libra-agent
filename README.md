@@ -153,6 +153,16 @@ LIBRA_KIS_PRODUCT_CODE=01
 .\scripts\run-live-e2e.ps1
 ```
 
+모의투자 계좌에 테스트용 보유 종목을 만들 때는 KIS demo 전용 주문 스크립트를 사용한다.
+이 스크립트는 주문을 실제 전송하지만 `demo` 환경으로만 동작하며 실전 환경은 코드에서 거절한다.
+
+```powershell
+.\.venv\Scripts\python.exe scripts\kis_paper_buy.py --fixture
+
+# 또는 개별 종목 지정
+.\.venv\Scripts\python.exe scripts\kis_paper_buy.py --order 005930:1 --order 000660:1
+```
+
 ## Ingest Handoff
 
 Agent는 요청 처리 중 `libra-ingest`를 직접 실행하지 않는다. 최신 데이터가 필요하면

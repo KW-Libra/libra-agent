@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,10 +9,19 @@ from pathlib import Path
 import httpx
 
 from libra_agent.libra.portfolio_sources.kis import (
+    KISCredentialConfig,
     KISDomesticPortfolioClient,
+    KISPaperOrderClient,
     KISPortfolioBootstrapError,
     _config_from_args,
 )
+
+
+def json_loads(content: bytes) -> dict[str, object]:
+    payload = json.loads(content.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise AssertionError("Expected JSON object payload.")
+    return payload
 
 
 class LibraKISPortfolioTests(unittest.TestCase):
@@ -144,6 +154,80 @@ class LibraKISPortfolioTests(unittest.TestCase):
 
         with self.assertRaises(KISPortfolioBootstrapError):
             _config_from_args(args)
+
+    def test_kis_paper_order_client_places_market_buy(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.url.path == "/oauth2/tokenP":
+                return httpx.Response(200, json={"access_token": "test-token"})
+            if request.url.path == "/uapi/hashkey":
+                payload = json_loads(request.content)
+                self.assertEqual(payload["PDNO"], "005930")
+                self.assertEqual(payload["ORD_DVSN"], "01")
+                self.assertEqual(payload["ORD_QTY"], "1")
+                self.assertEqual(payload["ORD_UNPR"], "0")
+                return httpx.Response(200, json={"HASH": "test-hash"})
+            if request.url.path == "/uapi/domestic-stock/v1/trading/order-cash":
+                payload = json_loads(request.content)
+                self.assertEqual(request.headers["tr_id"], "VTTC0802U")
+                self.assertEqual(request.headers["authorization"], "Bearer test-token")
+                self.assertEqual(request.headers["hashkey"], "test-hash")
+                self.assertEqual(payload["CANO"], "87654321")
+                self.assertEqual(payload["ACNT_PRDT_CD"], "01")
+                self.assertEqual(payload["PDNO"], "005930")
+                return httpx.Response(
+                    200,
+                    json={
+                        "rt_cd": "0",
+                        "msg_cd": "APBK0013",
+                        "msg1": "주문 전송 완료",
+                        "output": {"ODNO": "0000000001"},
+                    },
+                )
+            raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+        config = KISCredentialConfig(
+            env="demo",
+            app_key="fixture-app-key",
+            app_secret="fixture-app-secret",
+            account_no="87654321",
+            product_code="01",
+            base_url="https://demo.example",
+            user_agent="UnitTestAgent/1.0",
+        )
+        transport = httpx.MockTransport(handler)
+        with httpx.Client(transport=transport, base_url="https://demo.example") as http_client:
+            client = KISPaperOrderClient(config)
+            result = client.place_market_buy(
+                ticker="005930",
+                quantity=1,
+                http_client=http_client,
+            )
+
+        self.assertEqual([request.url.path for request in requests], [
+            "/oauth2/tokenP",
+            "/uapi/hashkey",
+            "/uapi/domestic-stock/v1/trading/order-cash",
+        ])
+        self.assertEqual(result["ticker"], "005930")
+        self.assertEqual(result["side"], "buy")
+        self.assertEqual(result["quantity"], 1)
+        self.assertEqual(result["response"]["rt_cd"], "0")
+
+    def test_kis_paper_order_client_rejects_real_environment(self) -> None:
+        config = KISCredentialConfig(
+            env="real",
+            app_key="fixture-app-key",
+            app_secret="fixture-app-secret",
+            account_no="12345678",
+            product_code="01",
+            base_url="https://real.example",
+        )
+
+        with self.assertRaises(KISPortfolioBootstrapError):
+            KISPaperOrderClient(config)
 
 
 if __name__ == "__main__":

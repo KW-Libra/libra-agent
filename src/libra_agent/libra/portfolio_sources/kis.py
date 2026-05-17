@@ -19,6 +19,8 @@ DEFAULT_USER_AGENT = "Mozilla/5.0"
 REAL_BASE_URL = "https://openapi.koreainvestment.com:9443"
 DEMO_BASE_URL = "https://openapivts.koreainvestment.com:29443"
 DOMESTIC_BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
+DOMESTIC_ORDER_CASH_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
+HASHKEY_PATH = "/uapi/hashkey"
 TOKEN_PATH = "/oauth2/tokenP"
 
 
@@ -282,6 +284,110 @@ class KISDomesticPortfolioClient:
             ) from exc
 
 
+class KISPaperOrderClient(KISDomesticPortfolioClient):
+    def __init__(self, config: KISCredentialConfig) -> None:
+        if config.env != "demo":
+            raise KISPortfolioBootstrapError(
+                "KIS paper order client only supports demo environment."
+            )
+        super().__init__(config)
+
+    def place_market_buy(
+        self,
+        *,
+        ticker: str,
+        quantity: int,
+        http_client: httpx.Client | None = None,
+    ) -> dict[str, Any]:
+        return self.place_cash_order(
+            side="buy",
+            ticker=ticker,
+            quantity=quantity,
+            order_type="market",
+            price=0,
+            http_client=http_client,
+        )
+
+    def place_cash_order(
+        self,
+        *,
+        side: Literal["buy", "sell"],
+        ticker: str,
+        quantity: int,
+        order_type: Literal["market", "limit"] = "market",
+        price: int = 0,
+        http_client: httpx.Client | None = None,
+    ) -> dict[str, Any]:
+        ticker_code = _normalize_domestic_ticker(ticker)
+        if quantity <= 0:
+            raise KISPortfolioBootstrapError("KIS order quantity must be greater than zero.")
+        if order_type == "limit" and price <= 0:
+            raise KISPortfolioBootstrapError("KIS limit order price must be greater than zero.")
+
+        owns_client = http_client is None
+        client = http_client or httpx.Client(timeout=self.config.timeout_seconds)
+        try:
+            token = self._issue_access_token(client)
+            body = {
+                "CANO": self.config.account_no,
+                "ACNT_PRDT_CD": self.config.product_code,
+                "PDNO": ticker_code,
+                "ORD_DVSN": "01" if order_type == "market" else "00",
+                "ORD_QTY": str(int(quantity)),
+                "ORD_UNPR": "0" if order_type == "market" else str(int(price)),
+            }
+            hashkey = self._issue_hashkey(client, body)
+            response = client.post(
+                f"{self.config.base_url}{DOMESTIC_ORDER_CASH_PATH}",
+                headers={
+                    "Content-Type": "application/json; charset=utf-8",
+                    "authorization": f"Bearer {token}",
+                    "appkey": self.config.app_key,
+                    "appsecret": self.config.app_secret,
+                    "tr_id": "VTTC0802U" if side == "buy" else "VTTC0801U",
+                    "custtype": "P",
+                    "hashkey": hashkey,
+                    "User-Agent": self.config.user_agent,
+                },
+                json=body,
+            )
+            self._raise_for_http(response, "paper domestic cash order")
+            payload = response.json()
+            if str(payload.get("rt_cd", "")) != "0":
+                raise KISPortfolioBootstrapError(
+                    f"KIS paper order failed: {payload.get('msg_cd', '')} {payload.get('msg1', '')}".strip()
+                )
+            return {
+                "ticker": ticker_code,
+                "side": side,
+                "quantity": int(quantity),
+                "order_type": order_type,
+                "price": int(price),
+                "response": payload,
+            }
+        finally:
+            if owns_client:
+                client.close()
+
+    def _issue_hashkey(self, client: httpx.Client, body: Mapping[str, Any]) -> str:
+        response = client.post(
+            f"{self.config.base_url}{HASHKEY_PATH}",
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "appkey": self.config.app_key,
+                "appsecret": self.config.app_secret,
+                "User-Agent": self.config.user_agent,
+            },
+            json=dict(body),
+        )
+        self._raise_for_http(response, "hashkey issuance")
+        payload = response.json()
+        hashkey = str(payload.get("HASH") or payload.get("hash") or "").strip()
+        if not hashkey:
+            raise KISPortfolioBootstrapError("KIS hashkey response did not include HASH.")
+        return hashkey
+
+
 def _read_kis_config(path: Path) -> dict[str, str]:
     if not path.exists():
         raise KISPortfolioBootstrapError(f"KIS config file does not exist: {path}")
@@ -354,3 +460,10 @@ def _build_aliases(*, ticker: str, company_name: str) -> tuple[str, ...]:
     if collapsed_name and collapsed_name != company_name:
         aliases.add(collapsed_name)
     return tuple(sorted(aliases))
+
+
+def _normalize_domestic_ticker(value: str) -> str:
+    ticker = "".join(char for char in str(value).strip() if char.isdigit())
+    if len(ticker) != 6:
+        raise KISPortfolioBootstrapError("KIS domestic stock ticker must be 6 digits.")
+    return ticker
