@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 from libra_agent.libra.portfolio_sources.kis import (
@@ -54,6 +55,26 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Buy the standard Libra test fixture: 005930, 000660, 035420, 005380, 105560, one share each.",
     )
+    parser.add_argument(
+        "--reserve",
+        action="store_true",
+        help="Place KIS reservation buy orders for the next business day instead of immediate cash orders.",
+    )
+    parser.add_argument(
+        "--list-reservations",
+        action="store_true",
+        help="List KIS paper reservation orders instead of placing orders.",
+    )
+    parser.add_argument(
+        "--reservation-start",
+        default=None,
+        help="Reservation query start date in YYYYMMDD. Defaults to today.",
+    )
+    parser.add_argument(
+        "--reservation-end",
+        default=None,
+        help="Reservation query end date in YYYYMMDD. Defaults to --reservation-start.",
+    )
     return parser
 
 
@@ -63,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     orders = _parse_orders(args.order)
     if args.fixture:
         orders.extend(FIXTURE_ORDERS)
-    if not orders:
+    if not orders and not args.list_reservations:
         raise SystemExit("Pass at least one --order TICKER:QTY or use --fixture.")
 
     config_args = argparse.Namespace(
@@ -78,15 +99,47 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = _config_from_args(config_args)
         client = KISPaperOrderClient(config)
-        results = [
-            client.place_market_buy(ticker=ticker, quantity=quantity)
-            for ticker, quantity in orders
-        ]
+        if args.list_reservations:
+            start_date = args.reservation_start or date.today().strftime("%Y%m%d")
+            end_date = args.reservation_end or start_date
+            results = client.fetch_reservation_orders(
+                start_date=start_date,
+                end_date=end_date,
+            )
+            payload = {
+                "ok": True,
+                "env": "demo",
+                "query": {"reservation_start": start_date, "reservation_end": end_date},
+                "reservation_orders": results,
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+        if args.reserve:
+            results = [
+                client.place_market_buy_reservation(ticker=ticker, quantity=quantity)
+                for ticker, quantity in orders
+            ]
+        else:
+            results = [
+                client.place_market_buy(ticker=ticker, quantity=quantity)
+                for ticker, quantity in orders
+            ]
     except KISPortfolioBootstrapError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
 
-    print(json.dumps({"ok": True, "env": "demo", "orders": results}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "env": "demo",
+                "order_mode": "reservation" if args.reserve else "cash",
+                "orders": results,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

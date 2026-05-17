@@ -216,6 +216,124 @@ class LibraKISPortfolioTests(unittest.TestCase):
         self.assertEqual(result["quantity"], 1)
         self.assertEqual(result["response"]["rt_cd"], "0")
 
+    def test_kis_paper_order_client_places_market_buy_reservation(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if request.url.path == "/oauth2/tokenP":
+                return httpx.Response(200, json={"access_token": "test-token"})
+            if request.url.path == "/uapi/hashkey":
+                payload = json_loads(request.content)
+                self.assertEqual(payload["PDNO"], "005930")
+                self.assertEqual(payload["ORD_DVSN_CD"], "01")
+                self.assertEqual(payload["SLL_BUY_DVSN_CD"], "02")
+                self.assertEqual(payload["ORD_OBJT_CBLC_DVSN_CD"], "10")
+                self.assertEqual(payload["ORD_QTY"], "1")
+                self.assertEqual(payload["ORD_UNPR"], "0")
+                return httpx.Response(200, json={"HASH": "test-hash"})
+            if request.url.path == "/uapi/domestic-stock/v1/trading/order-resv":
+                payload = json_loads(request.content)
+                self.assertEqual(request.headers["tr_id"], "VTSC0008U")
+                self.assertEqual(request.headers["authorization"], "Bearer test-token")
+                self.assertEqual(request.headers["hashkey"], "test-hash")
+                self.assertEqual(payload["CANO"], "87654321")
+                self.assertEqual(payload["ACNT_PRDT_CD"], "01")
+                self.assertEqual(payload["PDNO"], "005930")
+                return httpx.Response(
+                    200,
+                    json={
+                        "rt_cd": "0",
+                        "msg_cd": "APBK0013",
+                        "msg1": "예약주문 접수 완료",
+                        "output": {"RSVN_ORD_SEQ": "0000000001"},
+                    },
+                )
+            raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+        config = KISCredentialConfig(
+            env="demo",
+            app_key="fixture-app-key",
+            app_secret="fixture-app-secret",
+            account_no="87654321",
+            product_code="01",
+            base_url="https://demo.example",
+            user_agent="UnitTestAgent/1.0",
+        )
+        transport = httpx.MockTransport(handler)
+        with httpx.Client(transport=transport, base_url="https://demo.example") as http_client:
+            client = KISPaperOrderClient(config)
+            result = client.place_market_buy_reservation(
+                ticker="005930",
+                quantity=1,
+                http_client=http_client,
+            )
+
+        self.assertEqual([request.url.path for request in requests], [
+            "/oauth2/tokenP",
+            "/uapi/hashkey",
+            "/uapi/domestic-stock/v1/trading/order-resv",
+        ])
+        self.assertEqual(result["ticker"], "005930")
+        self.assertEqual(result["side"], "buy")
+        self.assertEqual(result["quantity"], 1)
+        self.assertEqual(result["response"]["rt_cd"], "0")
+
+    def test_kis_paper_order_client_fetches_reservation_orders(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/oauth2/tokenP":
+                return httpx.Response(200, json={"access_token": "test-token"})
+            if request.url.path == "/uapi/domestic-stock/v1/trading/order-resv-ccnl":
+                self.assertEqual(request.headers["tr_id"], "VTSC0004R")
+                self.assertEqual(request.headers["authorization"], "Bearer test-token")
+                params = dict(request.url.params)
+                self.assertEqual(params["CANO"], "87654321")
+                self.assertEqual(params["ACNT_PRDT_CD"], "01")
+                self.assertEqual(params["RSVN_ORD_ORD_DT"], "20260517")
+                self.assertEqual(params["RSVN_ORD_END_DT"], "20260517")
+                return httpx.Response(
+                    200,
+                    json={
+                        "rt_cd": "0",
+                        "msg_cd": "MCA00000",
+                        "msg1": "정상처리 되었습니다.",
+                        "output": [
+                            {
+                                "pdno": "005930",
+                                "rsvn_ord_seq": "0000000001",
+                                "ord_qty": "1",
+                            }
+                        ],
+                    },
+                )
+            raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+        config = KISCredentialConfig(
+            env="demo",
+            app_key="fixture-app-key",
+            app_secret="fixture-app-secret",
+            account_no="87654321",
+            product_code="01",
+            base_url="https://demo.example",
+            user_agent="UnitTestAgent/1.0",
+        )
+        transport = httpx.MockTransport(handler)
+        with httpx.Client(transport=transport, base_url="https://demo.example") as http_client:
+            client = KISPaperOrderClient(config)
+            result = client.fetch_reservation_orders(
+                start_date="20260517",
+                end_date="20260517",
+                http_client=http_client,
+            )
+
+        self.assertEqual(result, [
+            {
+                "pdno": "005930",
+                "rsvn_ord_seq": "0000000001",
+                "ord_qty": "1",
+            }
+        ])
+
     def test_kis_paper_order_client_rejects_real_environment(self) -> None:
         config = KISCredentialConfig(
             env="real",

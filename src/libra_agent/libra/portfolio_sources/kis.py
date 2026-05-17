@@ -20,6 +20,8 @@ REAL_BASE_URL = "https://openapi.koreainvestment.com:9443"
 DEMO_BASE_URL = "https://openapivts.koreainvestment.com:29443"
 DOMESTIC_BALANCE_PATH = "/uapi/domestic-stock/v1/trading/inquire-balance"
 DOMESTIC_ORDER_CASH_PATH = "/uapi/domestic-stock/v1/trading/order-cash"
+DOMESTIC_ORDER_RESV_PATH = "/uapi/domestic-stock/v1/trading/order-resv"
+DOMESTIC_ORDER_RESV_CCNL_PATH = "/uapi/domestic-stock/v1/trading/order-resv-ccnl"
 HASHKEY_PATH = "/uapi/hashkey"
 TOKEN_PATH = "/oauth2/tokenP"
 
@@ -279,8 +281,10 @@ class KISDomesticPortfolioClient:
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            body = response.text.strip().replace("\r", " ").replace("\n", " ")
+            detail = f" Body: {body[:500]}" if body else ""
             raise KISPortfolioBootstrapError(
-                f"KIS {action} failed with HTTP {response.status_code}."
+                f"KIS {action} failed with HTTP {response.status_code}.{detail}"
             ) from exc
 
 
@@ -300,6 +304,22 @@ class KISPaperOrderClient(KISDomesticPortfolioClient):
         http_client: httpx.Client | None = None,
     ) -> dict[str, Any]:
         return self.place_cash_order(
+            side="buy",
+            ticker=ticker,
+            quantity=quantity,
+            order_type="market",
+            price=0,
+            http_client=http_client,
+        )
+
+    def place_market_buy_reservation(
+        self,
+        *,
+        ticker: str,
+        quantity: int,
+        http_client: httpx.Client | None = None,
+    ) -> dict[str, Any]:
+        return self.place_reservation_order(
             side="buy",
             ticker=ticker,
             quantity=quantity,
@@ -365,6 +385,126 @@ class KISPaperOrderClient(KISDomesticPortfolioClient):
                 "price": int(price),
                 "response": payload,
             }
+        finally:
+            if owns_client:
+                client.close()
+
+    def place_reservation_order(
+        self,
+        *,
+        side: Literal["buy", "sell"],
+        ticker: str,
+        quantity: int,
+        order_type: Literal["market", "limit"] = "market",
+        price: int = 0,
+        reservation_end_date: str = "",
+        http_client: httpx.Client | None = None,
+    ) -> dict[str, Any]:
+        ticker_code = _normalize_domestic_ticker(ticker)
+        if quantity <= 0:
+            raise KISPortfolioBootstrapError("KIS order quantity must be greater than zero.")
+        if order_type == "limit" and price <= 0:
+            raise KISPortfolioBootstrapError("KIS limit order price must be greater than zero.")
+
+        owns_client = http_client is None
+        client = http_client or httpx.Client(timeout=self.config.timeout_seconds)
+        try:
+            token = self._issue_access_token(client)
+            body = {
+                "CANO": self.config.account_no,
+                "ACNT_PRDT_CD": self.config.product_code,
+                "PDNO": ticker_code,
+                "ORD_QTY": str(int(quantity)),
+                "ORD_UNPR": "0" if order_type == "market" else str(int(price)),
+                "SLL_BUY_DVSN_CD": "02" if side == "buy" else "01",
+                "ORD_DVSN_CD": "01" if order_type == "market" else "00",
+                "ORD_OBJT_CBLC_DVSN_CD": "10",
+            }
+            if reservation_end_date:
+                body["RSVN_ORD_END_DT"] = reservation_end_date
+            hashkey = self._issue_hashkey(client, body)
+            response = client.post(
+                f"{self.config.base_url}{DOMESTIC_ORDER_RESV_PATH}",
+                headers={
+                    "Content-Type": "application/json; charset=utf-8",
+                    "authorization": f"Bearer {token}",
+                    "appkey": self.config.app_key,
+                    "appsecret": self.config.app_secret,
+                    "tr_id": "VTSC0008U",
+                    "custtype": "P",
+                    "hashkey": hashkey,
+                    "User-Agent": self.config.user_agent,
+                },
+                json=body,
+            )
+            self._raise_for_http(response, "paper domestic reservation order")
+            payload = response.json()
+            if str(payload.get("rt_cd", "")) != "0":
+                raise KISPortfolioBootstrapError(
+                    f"KIS paper reservation order failed: {payload.get('msg_cd', '')} {payload.get('msg1', '')}".strip()
+                )
+            return {
+                "ticker": ticker_code,
+                "side": side,
+                "quantity": int(quantity),
+                "order_type": order_type,
+                "price": int(price),
+                "reservation_end_date": reservation_end_date,
+                "response": payload,
+            }
+        finally:
+            if owns_client:
+                client.close()
+
+    def fetch_reservation_orders(
+        self,
+        *,
+        start_date: str,
+        end_date: str,
+        http_client: httpx.Client | None = None,
+    ) -> list[dict[str, Any]]:
+        owns_client = http_client is None
+        client = http_client or httpx.Client(timeout=self.config.timeout_seconds)
+        try:
+            token = self._issue_access_token(client)
+            response = client.get(
+                f"{self.config.base_url}{DOMESTIC_ORDER_RESV_CCNL_PATH}",
+                headers={
+                    "authorization": f"Bearer {token}",
+                    "appkey": self.config.app_key,
+                    "appsecret": self.config.app_secret,
+                    "tr_id": "VTSC0004R",
+                    "custtype": "P",
+                    "tr_cont": "",
+                    "User-Agent": self.config.user_agent,
+                },
+                params={
+                    "RSVN_ORD_ORD_DT": start_date,
+                    "RSVN_ORD_END_DT": end_date,
+                    "RSVN_ORD_SEQ": "",
+                    "TMNL_MDIA_KIND_CD": "00",
+                    "CANO": self.config.account_no,
+                    "ACNT_PRDT_CD": self.config.product_code,
+                    "PRCS_DVSN_CD": "0",
+                    "CNCL_YN": "",
+                    "PDNO": "",
+                    "SLL_BUY_DVSN_CD": "",
+                    "CTX_AREA_FK200": "",
+                    "CTX_AREA_NK200": "",
+                },
+            )
+            self._raise_for_http(response, "paper domestic reservation order query")
+            payload = response.json()
+            if str(payload.get("rt_cd", "")) != "0":
+                raise KISPortfolioBootstrapError(
+                    f"KIS paper reservation order query failed: {payload.get('msg_cd', '')} {payload.get('msg1', '')}".strip()
+                )
+            output = payload.get("output") or []
+            if isinstance(output, list):
+                return [dict(item) for item in output if isinstance(item, Mapping)]
+            if isinstance(output, Mapping):
+                return [dict(output)]
+            return []
         finally:
             if owns_client:
                 client.close()
