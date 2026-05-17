@@ -32,8 +32,12 @@ from libra_agent.libra.direct_indexing import PortfolioDefinition
 from libra_agent.libra.llm_clients import open_chat_client
 from libra_agent.libra_models import PortfolioSnapshot, TriggerEvent
 from libra_agent.libra_runtime import JudgeOrchestrator, LocalKnowledgeBase
+from libra_agent.libra_validation import (
+    EMPTY_PORTFOLIO_NO_TRADE_REASONING,
+    EMPTY_PORTFOLIO_NO_TRADE_SUMMARY,
+)
 from libra_agent.runtime.checkpointer import get_checkpointer
-from libra_agent.runtime.debate_events import publish_llm_skipped
+from libra_agent.runtime.debate_events import publish_debate_event, publish_llm_skipped
 
 log = get_logger(__name__)
 
@@ -73,6 +77,155 @@ class GraphState(TypedDict, total=False):
 async def _node_compliance_before(state: GraphState) -> dict[str, Any]:
     log.info("node.compliance_before", thread_id=state.get("thread_id"))
     return {"compliance_before": {"can_proceed": True, "violations": [], "state": "BEFORE"}}
+
+
+def _route_after_compliance_before(state: GraphState) -> str:
+    if _is_empty_portfolio_no_trade_check(state):
+        return "empty_portfolio_finalize"
+    return "round1"
+
+
+def _is_empty_portfolio_no_trade_check(state: GraphState) -> bool:
+    if str(state.get("trigger") or "pull") != "pull":
+        return False
+    if isinstance(state.get("trigger_event"), Mapping):
+        return False
+    if isinstance(state.get("portfolio_definition"), Mapping):
+        return False
+    portfolio = state.get("portfolio")
+    if not isinstance(portfolio, Mapping):
+        return False
+    holdings = portfolio.get("holdings")
+    if not isinstance(holdings, list) or holdings:
+        return False
+
+    lowered = str(state.get("query") or "").casefold()
+    exploration_tokens = (
+        "초기",
+        "후보",
+        "구성",
+        "설계",
+        "추천",
+        "관심",
+        "종목",
+        "시장",
+        "뉴스",
+        "공시",
+        "기회",
+        "탐색",
+        "찾",
+        "만들",
+        "편입",
+        "매수",
+        "매도",
+        "리밸런싱",
+        "리밸런스",
+        "비중",
+        "분산",
+        "build",
+        "create",
+        "recommend",
+        "candidate",
+    )
+    if any(token in lowered for token in exploration_tokens):
+        return False
+    check_tokens = ("점검", "유지", "조정", "리뷰", "확인", "판단", "check", "review")
+    return any(token in lowered for token in check_tokens)
+
+
+async def _node_empty_portfolio_finalize(state: GraphState) -> dict[str, Any]:
+    log.info("node.empty_portfolio_finalize", thread_id=state.get("thread_id"))
+    publish_llm_skipped(
+        actor="judge",
+        phase="core_routing",
+        reason="빈 포트폴리오 점검 fast-path로 Core 라우팅 LLM 호출을 생략합니다.",
+        context={"holdings": 0, "candidate_rebalance_plan": {}, "called_agents": []},
+    )
+    publish_debate_event(
+        "judge_action",
+        {
+            "layer": "core",
+            "turn_number": 1,
+            "action": "FINALIZE",
+            "reason": (
+                "보유 종목과 후보 리밸런싱 초안이 없어 실행 가능한 매수·매도 조정이 없습니다. "
+                "초기 포트폴리오 후보가 생성된 뒤 투자 검토를 진행합니다."
+            ),
+            "note": (
+                "빈 포트폴리오의 단순 유지·조정 점검 요청이므로 공시·뉴스 조회 없이 종료합니다. "
+                "시장 스캔이나 초기 후보 생성을 명시한 요청은 별도 정보 수집 경로로 처리합니다."
+            ),
+            "candidate_rebalance_plan": {},
+            "called_agents": [],
+            "response_count": 0,
+        },
+    )
+    publish_llm_skipped(
+        actor="judge",
+        phase="final_decision_final",
+        reason="빈 포트폴리오 no-trade fast-path로 최종 판단 LLM 호출을 생략합니다.",
+        context={"holdings": 0, "candidate_rebalance_plan": {}, "direct_indexing": None},
+    )
+    decision_payload = _empty_portfolio_no_trade_decision_payload()
+    publish_debate_event(
+        "final_decision_draft",
+        {
+            "decision": decision_payload["decision"],
+            "summary": decision_payload["summary"],
+            "confidence": decision_payload["confidence"],
+            "urgency": decision_payload["urgency"],
+            "called_agents": [],
+            "skipped_agents": [],
+            "requires_approval": False,
+        },
+    )
+    agent_result = {
+        "model": "deterministic",
+        "query": state.get("query") or "",
+        "portfolio": state.get("portfolio") or {},
+        "agent_responses": [],
+        "decision": decision_payload,
+        "knowledge_sources": {},
+        "direct_indexing": {
+            "portfolio_definition": None,
+            "drift_report": None,
+            "candidate_rebalance_plan": {},
+        },
+    }
+    final_decision = _final_decision_from_agent_result(
+        agent_result,
+        approval_required=_human_review_enabled(state),
+    )
+    return {
+        "agent_result": agent_result,
+        "compliance_after": {"can_proceed": True, "violations": [], "state": "AFTER"},
+        "final_decision": final_decision,
+        "run_status": "completed",
+    }
+
+
+def _empty_portfolio_no_trade_decision_payload() -> dict[str, Any]:
+    return {
+        "decision": "DEFER",
+        "summary": EMPTY_PORTFOLIO_NO_TRADE_SUMMARY,
+        "confidence": 0.95,
+        "urgency": "defer",
+        "reasoning": EMPTY_PORTFOLIO_NO_TRADE_REASONING,
+        "candidate_rebalance_plan": {},
+        "needs_trade_evaluation": False,
+        "follow_up_at": None,
+        "feedback_checkpoint": None,
+        "user_notification": {
+            "level": "info",
+            "body": EMPTY_PORTFOLIO_NO_TRADE_SUMMARY,
+            "action_required": False,
+            "kind": "final_decision",
+            "estimated_followup": None,
+            "sent_at": None,
+        },
+        "options": [],
+        "auto_safeguards": {},
+    }
 
 
 async def _node_round1(state: GraphState) -> dict[str, Any]:
@@ -434,13 +587,15 @@ def build_graph(checkpointer=None):
     builder: StateGraph = StateGraph(GraphState)
 
     builder.add_node("compliance_before", _node_compliance_before)
+    builder.add_node("empty_portfolio_finalize", _node_empty_portfolio_finalize)
     builder.add_node("round1", _node_round1)
     builder.add_node("mediator", _node_mediator)
     builder.add_node("final_judge", _node_final_judge)
     builder.add_node("human_review", _node_human_review)
 
     builder.add_edge(START, "compliance_before")
-    builder.add_edge("compliance_before", "round1")
+    builder.add_conditional_edges("compliance_before", _route_after_compliance_before)
+    builder.add_conditional_edges("empty_portfolio_finalize", _route_after_final_judge)
     builder.add_edge("round1", "mediator")
     builder.add_edge("mediator", "final_judge")
     builder.add_conditional_edges("final_judge", _route_after_final_judge)
