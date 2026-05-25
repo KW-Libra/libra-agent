@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
+from .ingest_bundle import IngestBundleError, knowledge_payload_from_ingest_bundle
 from .libra.agents.evaluation_agent import EvaluationAgent
 from .libra.committee import CommitteeRuntime
 from .libra.direct_indexing import PortfolioDefinition
@@ -168,6 +169,20 @@ def _ingest_refresh_source_paths(payload: Mapping[str, Any]) -> dict[str, str]:
 
 def _build_knowledge_base(payload: Mapping[str, Any]) -> LocalKnowledgeBase:
     ingest_source_paths = _ingest_refresh_source_paths(payload)
+    inline_bundle = _optional_mapping(payload.get("ingest_bundle"), field_name="ingest_bundle")
+    if inline_bundle is not None:
+        try:
+            knowledge_base = LocalKnowledgeBase.from_state_payload(
+                knowledge_payload_from_ingest_bundle(
+                    inline_bundle,
+                    source_path=str(inline_bundle.get("bundle_id") or "inline:ingest_bundle"),
+                )
+            )
+        except IngestBundleError as exc:
+            raise HTTPException(status_code=400, detail=f"ingest_bundle is invalid: {exc}") from exc
+        knowledge_base.source_paths.update(ingest_source_paths)
+        return knowledge_base
+
     inline_knowledge = _optional_mapping(payload.get("knowledge_base"), field_name="knowledge_base")
     if inline_knowledge is not None:
         knowledge_base = LocalKnowledgeBase.from_state_payload(inline_knowledge)
@@ -191,7 +206,10 @@ def _build_knowledge_base(payload: Mapping[str, Any]) -> LocalKnowledgeBase:
     if not any((events_path, normalized_documents_path, enriched_documents_path)):
         raise HTTPException(
             status_code=400,
-            detail="Pass knowledge_base or knowledge_sources with events/normalized_documents/enriched_documents.",
+            detail=(
+                "Pass ingest_bundle, knowledge_base, or knowledge_sources with "
+                "events/normalized_documents/enriched_documents."
+            ),
         )
     knowledge_base = LocalKnowledgeBase.from_files(
         events_path=events_path,

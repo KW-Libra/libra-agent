@@ -188,6 +188,7 @@ async def run_and_stream(thread_id: str, request) -> AsyncIterator[dict[str, str
         "portfolio": request.portfolio,
         "knowledge_sources": getattr(request, "knowledge_sources", None),
         "knowledge_base": request.knowledge_base,
+        "ingest_bundle": getattr(request, "ingest_bundle", None),
         "portfolio_definition": request.portfolio_definition,
         "trigger_event": request.trigger_event,
         "governance_v1": request.governance_v1,

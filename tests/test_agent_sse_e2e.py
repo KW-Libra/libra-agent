@@ -152,6 +152,19 @@ def test_api_runs_e2e_streams_completed_run(monkeypatch):
             "query": "e2e smoke",
             "portfolio": _portfolio(),
             "knowledge_base": {"events": [], "documents": [], "source_paths": {}},
+            "ingest_bundle": {
+                "bundle_id": "bundle-1",
+                "as_of": "2026-05-15T15:30:00+09:00",
+                "portfolio_id": "portfolio-1",
+                "source_policy": "live article-body ingest",
+                "prices_until": "2026-05-15",
+                "observed_count": 0,
+                "portfolio_relevant_count": 0,
+                "usable_for_trade_decision": True,
+                "items": [],
+                "document_count": 0,
+                "documents": [],
+            },
             "thread_id": "e2e-complete",
         },
     )
@@ -176,6 +189,7 @@ def test_api_runs_e2e_streams_completed_run(monkeypatch):
     assert events[0]["data"]["enable_human_interrupts"] is False
     assert events[-1]["data"]["decision"] == "HOLD"
     assert graph.initial_states[0]["knowledge_base"]["events"] == []
+    assert graph.initial_states[0]["ingest_bundle"]["bundle_id"] == "bundle-1"
 
 
 def test_api_runs_e2e_interrupts_and_resumes(monkeypatch):

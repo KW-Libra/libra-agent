@@ -26,6 +26,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from libra_agent.common.logging import get_logger
+from libra_agent.ingest_bundle import IngestBundleError, knowledge_payload_from_ingest_bundle
 from libra_agent.knowledge import KnowledgeReader, build_domain_inputs
 from libra_agent.libra.config import backend_config_from_env
 from libra_agent.libra.direct_indexing import PortfolioDefinition
@@ -51,6 +52,7 @@ class GraphState(TypedDict, total=False):
     portfolio: dict[str, Any]
     knowledge_sources: dict[str, Any] | None
     knowledge_base: dict[str, Any] | None
+    ingest_bundle: dict[str, Any] | None
     portfolio_definition: dict[str, Any] | None
     trigger_event: dict[str, Any] | None
     governance_v1: dict[str, Any] | None
@@ -248,9 +250,10 @@ async def _node_round1(state: GraphState) -> dict[str, Any]:
 
 
 def _knowledge_snapshot_for_state(state: GraphState) -> dict[str, Any]:
-    if isinstance(state.get("knowledge_base"), Mapping) or isinstance(
-        state.get("knowledge_sources"),
-        Mapping,
+    if (
+        isinstance(state.get("ingest_bundle"), Mapping)
+        or isinstance(state.get("knowledge_base"), Mapping)
+        or isinstance(state.get("knowledge_sources"), Mapping)
     ):
         knowledge_base = _knowledge_base_from_state(state)
         state_payload = knowledge_base.to_state_payload()
@@ -502,6 +505,18 @@ def _trigger_event_from_state(state: GraphState) -> TriggerEvent | None:
 
 
 def _knowledge_base_from_state(state: GraphState) -> LocalKnowledgeBase:
+    ingest_bundle = state.get("ingest_bundle")
+    if isinstance(ingest_bundle, Mapping):
+        try:
+            return LocalKnowledgeBase.from_state_payload(
+                knowledge_payload_from_ingest_bundle(
+                    ingest_bundle,
+                    source_path=str(ingest_bundle.get("bundle_id") or "inline:ingest_bundle"),
+                )
+            )
+        except IngestBundleError as exc:
+            raise RuntimeError(f"ingest_bundle is invalid: {exc}") from exc
+
     inline = state.get("knowledge_base")
     if isinstance(inline, Mapping):
         return LocalKnowledgeBase.from_state_payload(_without_ingest_refresh(inline))

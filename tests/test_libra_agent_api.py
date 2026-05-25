@@ -68,6 +68,52 @@ class LibraAgentApiTests(unittest.TestCase):
         self.assertEqual(knowledge_base.source_paths["ingest_refresh_mode"], "live")
         self.assertEqual(knowledge_base.source_paths["ingest_rss_limit"], "1")
 
+    def test_knowledge_base_accepts_ingest_bundle(self) -> None:
+        knowledge_base = _build_knowledge_base(
+            {
+                "ingest_bundle": {
+                    "bundle_id": "bundle-1",
+                    "as_of": "2026-05-15T15:30:00+09:00",
+                    "portfolio_id": "portfolio-1",
+                    "source_policy": "live article-body ingest",
+                    "prices_until": "2026-05-15",
+                    "observed_count": 1,
+                    "portfolio_relevant_count": 1,
+                    "usable_for_trade_decision": True,
+                    "items": [
+                        {
+                            "event_id": "evt-1",
+                            "event_type": "NEWS",
+                            "event_time": "2026-05-15T09:00:00+09:00",
+                            "headline": "뉴스",
+                            "summary": "본문 기반 요약",
+                            "confidence": 0.8,
+                            "source_documents": ["doc-1"],
+                        }
+                    ],
+                    "document_count": 1,
+                    "documents": [
+                        {
+                            "doc_id": "doc-1",
+                            "doc_type": "NEWS",
+                            "title": "뉴스",
+                            "body": "뉴스 기사 본문입니다.",
+                            "publisher": "publisher",
+                            "source_name": "Google News RSS",
+                            "source_url": "https://example.com/news",
+                            "region": "KR",
+                            "published_at": "2026-05-15T09:00:00+09:00",
+                            "metadata": {"body_source": "article_text"},
+                        }
+                    ],
+                },
+            }
+        )
+
+        self.assertEqual(len(knowledge_base.events), 1)
+        self.assertEqual(len(knowledge_base.documents), 1)
+        self.assertEqual(knowledge_base.source_paths["ingest_bundle"], "bundle-1")
+
     def test_attach_governance_v1_adds_compliance_branch(self) -> None:
         portfolio = PortfolioSnapshot.from_dict(
             {
