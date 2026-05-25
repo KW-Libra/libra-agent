@@ -28,13 +28,8 @@ if (Test-Path -LiteralPath $EnvPath) {
 }
 
 $Python = Join-Path $Root ".venv\Scripts\python.exe"
-if (-not (Test-Path $Python)) {
-  $SharedPython = "D:\Libra\.venv\Scripts\python.exe"
-  if (Test-Path $SharedPython) {
-    $Python = $SharedPython
-  } else {
-    $Python = "python"
-  }
+if (-not (Test-Path -LiteralPath $Python)) {
+  $Python = "python"
 }
 
 $env:LIBRA_LLM_PROVIDER = $Provider
