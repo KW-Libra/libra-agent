@@ -32,6 +32,7 @@ class RunStartRequest(BaseModel):
     portfolio: dict[str, Any] = Field(...)
     knowledge_sources: dict[str, Any] | None = None
     knowledge_base: dict[str, Any] | None = None
+    ingest_bundle: dict[str, Any] | None = None
     portfolio_definition: dict[str, Any] | None = None
     trigger_event: dict[str, Any] | None = None
     governance_v1: dict[str, Any] | None = None

@@ -36,6 +36,17 @@
       ],
       "description": "Optional inline knowledge payload passed directly to the runtime graph."
     },
+    "ingest_bundle": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ingestBundle"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Point-in-time ingest bundle. This is the same evidence contract used by replay/backtest runs."
+    },
     "portfolio_definition": {
       "anyOf": [
         {
@@ -198,6 +209,67 @@
         },
         "source_paths": {
           "$ref": "#/$defs/sourcePaths"
+        }
+      }
+    },
+    "ingestBundle": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "bundle_id",
+        "as_of",
+        "portfolio_id",
+        "source_policy",
+        "prices_until",
+        "observed_count",
+        "portfolio_relevant_count",
+        "usable_for_trade_decision",
+        "items"
+      ],
+      "properties": {
+        "bundle_id": {
+          "type": "string"
+        },
+        "as_of": {
+          "type": "string"
+        },
+        "portfolio_id": {
+          "type": "string"
+        },
+        "source_policy": {
+          "type": "string"
+        },
+        "prices_until": {
+          "type": "string"
+        },
+        "observed_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "portfolio_relevant_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "usable_for_trade_decision": {
+          "type": "boolean"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/knowledgeEvent"
+          }
+        },
+        "documents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "default": []
+        },
+        "document_count": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },

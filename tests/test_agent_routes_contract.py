@@ -161,6 +161,19 @@ def test_run_start_request_accepts_runtime_contract_fields():
             "documents": [],
             "source_paths": {"ingest_refresh_enabled": "true"},
         },
+        ingest_bundle={
+            "bundle_id": "bundle-1",
+            "as_of": "2026-05-15T15:30:00+09:00",
+            "portfolio_id": "portfolio-1",
+            "source_policy": "live article-body ingest",
+            "prices_until": "2026-05-15",
+            "observed_count": 0,
+            "portfolio_relevant_count": 0,
+            "usable_for_trade_decision": True,
+            "items": [],
+            "document_count": 0,
+            "documents": [],
+        },
         portfolio_definition={
             "name": "Core",
             "target_weights": [{"ticker": "005930", "company_name": "삼성전자", "weight": 1.0}],
@@ -176,6 +189,7 @@ def test_run_start_request_accepts_runtime_contract_fields():
     assert request.human_review_enabled() is True
     assert request.knowledge_sources["ingest_refresh_enabled"] is False
     assert request.knowledge_base["source_paths"]["ingest_refresh_enabled"] == "true"
+    assert request.ingest_bundle["bundle_id"] == "bundle-1"
     assert request.portfolio_definition["target_weights"][0]["ticker"] == "005930"
     assert request.governance_v1["execution_mode"] == "primary"
 
@@ -216,6 +230,19 @@ def test_judge_run_request_schema_accepts_route_runtime_fields():
                 ],
                 "documents": [],
                 "source_paths": {"ingest_refresh_enabled": "true"},
+            },
+            "ingest_bundle": {
+                "bundle_id": "bundle-1",
+                "as_of": "2026-05-15T15:30:00+09:00",
+                "portfolio_id": "portfolio-1",
+                "source_policy": "live article-body ingest",
+                "prices_until": "2026-05-15",
+                "observed_count": 0,
+                "portfolio_relevant_count": 0,
+                "usable_for_trade_decision": True,
+                "items": [],
+                "document_count": 0,
+                "documents": [],
             },
             "portfolio_definition": {
                 "name": "Core",
