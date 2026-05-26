@@ -181,6 +181,12 @@ class AgentResponse:
     tools_called: list[ToolCall] = field(default_factory=list)
     depth_used: str = "medium"
     focus_tickers: list[str] = field(default_factory=list)
+    # ---- Phase A 신규 (2026-05-26, 비파괴) — 22번 노트 §9 P0-2/P0-3 ----
+    specifics: dict[str, Any] | None = None
+    as_of_date: datetime | None = None
+    data_snapshot_hash: str | None = None
+    llm_cached: bool | None = None
+    llm_fallback_active: bool | None = None
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> AgentResponse:
@@ -219,6 +225,12 @@ class AgentResponse:
             focus_tickers=[
                 _as_str(item) for item in _as_list(payload.get("focus_tickers")) if _as_str(item)
             ],
+            # ---- Phase A: 신규 필드 (비파괴) ----
+            specifics=(_as_dict(payload.get("specifics")) or None),
+            as_of_date=coerce_datetime(payload.get("as_of_date")),
+            data_snapshot_hash=(_as_str(payload.get("data_snapshot_hash")) or None),
+            llm_cached=(_as_bool(payload["llm_cached"]) if "llm_cached" in payload and payload["llm_cached"] is not None else None),
+            llm_fallback_active=(_as_bool(payload["llm_fallback_active"]) if "llm_fallback_active" in payload and payload["llm_fallback_active"] is not None else None),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -245,6 +257,12 @@ class AgentResponse:
             "tools_called": [item.to_dict() for item in self.tools_called],
             "depth_used": self.depth_used,
             "focus_tickers": list(self.focus_tickers),
+            # ---- Phase A 신규 (None 일 때만 직렬화 생략) ----
+            **({"specifics": self.specifics} if self.specifics is not None else {}),
+            **({"as_of_date": self.as_of_date.isoformat()} if self.as_of_date is not None else {}),
+            **({"data_snapshot_hash": self.data_snapshot_hash} if self.data_snapshot_hash is not None else {}),
+            **({"llm_cached": self.llm_cached} if self.llm_cached is not None else {}),
+            **({"llm_fallback_active": self.llm_fallback_active} if self.llm_fallback_active is not None else {}),
         }
 
 

@@ -1244,6 +1244,14 @@ class LLMAgent:
         depth: str,
         reason: str,
     ) -> AgentResponse:
+        # ---- Phase A (2026-05-26): backtest 모드 fallback 차단 토글 ----
+        # 22번 노트 §9 P0-3 — fallback 응답이 backtest verdict 분포를 오염시키지 않도록
+        # LIBRA_DISABLE_LLM_FALLBACK=1 시 exception 그대로 bubble up (v1 design 원래 동작).
+        import os as _os
+        if _os.environ.get("LIBRA_DISABLE_LLM_FALLBACK", "").strip().lower() in ("1", "true", "yes"):
+            raise ChatClientError(
+                f"LLM fallback disabled by LIBRA_DISABLE_LLM_FALLBACK env (reason={reason})"
+            )
         event_count = len(knowledge_slice.events)
         document_count = len(knowledge_slice.documents)
         observed_count = self._observed_count(knowledge_slice)
@@ -1308,6 +1316,8 @@ class LLMAgent:
         )
         response.tools_called = knowledge_slice.tools_called
         response.depth_used = depth
+        # ---- Phase A: fallback 응답임을 명시 (22번 §8.6, 17번 §7 trace) ----
+        response.llm_fallback_active = True
         return response
 
     def _observed_count(self, knowledge_slice: KnowledgeSlice) -> int:
