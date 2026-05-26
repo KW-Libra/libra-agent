@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -232,7 +233,10 @@ class CommitteeRuntime:
             market_data=market_data,
         )
         compliance_before = self.compliance_engine.check(before_ctx, "BEFORE")
-        round1_responses = run_agent_callables_parallel(round1_agent_calls, max_workers=11)
+        round1_responses = run_agent_callables_parallel(
+            round1_agent_calls,
+            max_workers=_committee_max_workers("LIBRA_COMMITTEE_ROUND1_MAX_WORKERS", 11),
+        )
         round1 = responses_to_opinions(round1_responses, round_number=1)
         preliminary_consensus = consensus_by_subject(round1)
         candidate_targets = select_targets(preliminary_consensus, round1)
@@ -256,7 +260,10 @@ class CommitteeRuntime:
             for target in mediator_decision.targets_to_recall:
                 agent_id = _agent_id_from_display(target)
                 round2_calls[agent_id] = round2_agent_call_factory(agent_id, round2_context)
-            round2_responses = run_agent_callables_parallel(round2_calls, max_workers=4)
+            round2_responses = run_agent_callables_parallel(
+                round2_calls,
+                max_workers=_committee_max_workers("LIBRA_COMMITTEE_ROUND2_MAX_WORKERS", 4),
+            )
             round2 = responses_to_opinions(round2_responses, round_number=2)
             _publish_mediator_decision(
                 mediator_decision,
@@ -411,11 +418,42 @@ class CommitteeRuntime:
             raise
         except Exception as exc:
             raise ChatClientError("Mediator Judge LLM failed.") from exc
-        return _parse_mediator_decision(
-            raw,
-            consensus_per_subject=consensus_per_subject,
-            candidate_targets=candidate_targets,
-        )
+        try:
+            return _parse_mediator_decision(
+                raw,
+                consensus_per_subject=consensus_per_subject,
+                candidate_targets=candidate_targets,
+            )
+        except ChatClientError as exc:
+            if _committee_llm_repair_attempts() <= 0:
+                raise
+            repair_payload = {
+                "invalid_response": raw,
+                "validator_error": str(exc),
+                "candidate_targets": list(candidate_targets),
+                "rules": [
+                    "targets_to_recall must contain only exact strings from candidate_targets.",
+                    "Set skip_round_2=true and targets_to_recall=[] when no candidate should be recalled.",
+                    "Return JSON only.",
+                ],
+            }
+            repaired = _chat_json_strict(
+                client,
+                system_prompt=_MEDIATOR_SYSTEM_PROMPT
+                + "\nThe previous response failed validation. Repair it without adding new targets.",
+                user_prompt=json.dumps(repair_payload, ensure_ascii=False, separators=(",", ":")),
+                tool_name="submit_mediator_decision",
+                tool_description="유효하지 않은 Mediator 응답을 candidate_targets 안에서만 수정합니다.",
+                input_schema=_mediator_decision_schema(candidate_targets),
+                temperature=0.0,
+                actor="mediator",
+                phase="round2_target_selection_repair",
+            )
+            return _parse_mediator_decision(
+                repaired,
+                consensus_per_subject=consensus_per_subject,
+                candidate_targets=candidate_targets,
+            )
 
 
 def run_agent_callables_parallel(
@@ -442,6 +480,42 @@ def run_agent_callables_parallel(
             agent_id = future_to_agent[future]
             results[agent_id] = future.result()
     return [results[agent_id] for agent_id in agent_calls.keys()]
+
+
+def _committee_max_workers(env_name: str, default: int) -> int:
+    raw = os.environ.get(env_name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return default
+
+
+def _committee_llm_repair_attempts() -> int:
+    raw = os.environ.get("LIBRA_COMMITTEE_LLM_REPAIR_ATTEMPTS", "0")
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
+def _drop_invalid_mediator_targets() -> bool:
+    return os.environ.get("LIBRA_DROP_INVALID_MEDIATOR_TARGETS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+
+
+def _compact_opinion_reasoning_chars() -> int:
+    raw = os.environ.get("LIBRA_COMMITTEE_OPINION_REASONING_CHARS", "700")
+    try:
+        return max(80, int(raw))
+    except ValueError:
+        return 700
 
 
 def _run_agent_call_with_events(agent_id: str, call: Callable[[], AgentResponse]) -> AgentResponse:
@@ -524,6 +598,8 @@ _FINAL_JUDGE_SYSTEM_PROMPT = """당신은 Libra 시스템의 Final Judge 입니�
 - reasoning: 한국어 한 문단.
 - user_question: USER_DECISION_REQUIRED일 때만 한국어 질문, 아니면 null.
 - user_options: USER_DECISION_REQUIRED일 때 정확히 3개. 각 항목은 label, supporting_agents, expected_effect를 포함.
+- 문자열은 짧게 작성합니다. reasoning은 180자 이내, user_question은 80자 이내, expected_effect는 80자 이내입니다.
+- Markdown, 목록, 줄바꿈, 코드블록을 쓰지 않습니다.
 - 한국어만 사용하고 Japanese kana는 사용하지 않습니다.
 """
 
@@ -542,6 +618,8 @@ def _parse_mediator_decision(
     for item in raw_targets:
         agent_id = _agent_id_from_display(str(item))
         if agent_id not in candidate_ids:
+            if _drop_invalid_mediator_targets():
+                continue
             raise ChatClientError(f"Mediator Judge selected non-candidate target: {item}")
         display = _display_agent_name(agent_id)
         if display not in targets:
@@ -654,7 +732,7 @@ def _compact_opinion(opinion: AgentOpinion) -> dict[str, Any]:
         "round": opinion.round,
         "votes": [vote.to_dict() for vote in opinion.votes],
         "silence_reason": opinion.silence_reason,
-        "reasoning": opinion.reasoning[:700],
+        "reasoning": opinion.reasoning[:_compact_opinion_reasoning_chars()],
         "metadata": dict(opinion.metadata),
         "delta_from_round1": opinion.delta_from_round1,
     }
