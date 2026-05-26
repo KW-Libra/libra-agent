@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 
+from ..governance_config import load_governance_config
 from ..schemas.agent import AgentOpinion, Direction, Vote
 from ..schemas.decision import ConsensusBranch, ConsensusScore
 
@@ -21,19 +22,20 @@ def compute_consensus(votes: list[Vote]) -> float:
 
 
 def classify_branch(votes: list[Vote]) -> ConsensusBranch:
+    cfg = load_governance_config()
     eligible = [vote for vote in votes if not vote.informational]
     confidence_sum = sum(vote.confidence for vote in eligible)
-    if len(eligible) < 2 or confidence_sum < 1.0:
+    if len(eligible) < 2 or confidence_sum < cfg.insufficient_votes_confidence_sum:
         return ConsensusBranch.INSUFFICIENT_VOTES
 
     hold_ratio = sum(1 for vote in eligible if vote.direction == Direction.HOLD) / len(eligible)
-    if hold_ratio >= 0.6:
+    if hold_ratio >= cfg.strong_hold_ratio_threshold:
         return ConsensusBranch.STRONG_HOLD
 
     score = abs(compute_consensus(votes))
-    if score >= 0.6:
+    if score >= cfg.strong_consensus_threshold:
         return ConsensusBranch.STRONG_CONSENSUS
-    if score >= 0.3:
+    if score >= cfg.weak_consensus_threshold:
         return ConsensusBranch.WEAK_CONSENSUS
     return ConsensusBranch.CONFLICT
 
@@ -64,9 +66,14 @@ def select_targets(
     consensus_per_subject: dict[str, ConsensusScore],
     round1_opinions: list[AgentOpinion],
     *,
-    max_targets: int = 4,
-    min_confidence: float = 0.4,
+    max_targets: int | None = None,
+    min_confidence: float | None = None,
 ) -> list[str]:
+    cfg = load_governance_config()
+    if max_targets is None:
+        max_targets = cfg.r2_max_targets
+    if min_confidence is None:
+        min_confidence = cfg.r2_min_confidence
     conflict_subjects = {
         subject
         for subject, score in consensus_per_subject.items()

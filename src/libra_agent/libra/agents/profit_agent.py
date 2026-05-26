@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from libra_agent.libra.governance_config import load_governance_config
 from libra_agent.libra_models import (
     AgentResponse,
     AgentVerdict,
@@ -26,6 +27,7 @@ class ProfitAgent:
         rebalance_plan: dict[str, float],
     ) -> AgentResponse:
         del query
+        cfg = load_governance_config()
         signals: dict[str, float] = {}
         gross_change = 0.0
         plan_score = 0.0
@@ -39,7 +41,11 @@ class ProfitAgent:
         expected_return_3m = plan_score * 65.0
         sharpe_ratio = plan_score / max(0.05, gross_change * 0.75)
         max_drawdown = -1.0 * ((gross_change * 10.0) + max(0.0, -plan_score * 35.0))
-        confidence = _clamp(0.42 + (len(signals) * 0.08), 0.0, 0.75)
+        confidence = _clamp(
+            cfg.profit_confidence_base + (len(signals) * cfg.profit_confidence_per_signal),
+            0.0,
+            cfg.profit_confidence_max,
+        )
         recommendation = (
             "Heuristic v1 simulation suggests modest upside relative to trade size."
             if plan_score >= 0
@@ -64,7 +70,7 @@ class ProfitAgent:
                     "recommendation_text": recommendation,
                 },
             },
-            direction=_clamp(plan_score * 8.0, -1.0, 1.0),
+            direction=_clamp(plan_score * cfg.profit_direction_scale, -1.0, 1.0),
             strength=_clamp(gross_change * 4.0, 0.0, 1.0),
             urgency=Urgency.SCHEDULED,
             confidence=confidence,
