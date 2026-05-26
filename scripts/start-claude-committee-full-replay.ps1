@@ -2,6 +2,9 @@ param(
     [string]$OutDir = "D:\Libra\outputs\backtests\kr-objective-2020-2023-opendart-googlenews",
     [string]$EnvFile = "D:\libra-agent\.env.live.local",
     [string]$Model = "claude-sonnet-4-6",
+    [string]$GovernancePreset = "",
+    [string]$PromptVariant = "",
+    [int]$Limit = 0,
     [string]$RunId = "",
     [switch]$Force
 )
@@ -34,7 +37,9 @@ if (-not $env:ANTHROPIC_API_KEY) {
 
 if (-not $RunId) {
     $modelSlug = $Model.ToLowerInvariant() -replace "[^a-z0-9]+", "-"
-    $RunId = "article-$modelSlug-service-v1-committee-full-official"
+    $presetSlug = if ($GovernancePreset) { $GovernancePreset.ToLowerInvariant() -replace "[^a-z0-9]+", "-" } else { "default" }
+    $suffix = if ($Limit -gt 0) { "smoke-$Limit" } else { "full-official" }
+    $RunId = "article-$modelSlug-$presetSlug-service-v1-committee-$suffix"
 }
 
 $env:PYTHONPATH = "src"
@@ -51,6 +56,16 @@ $env:LIBRA_COMMITTEE_ROUND2_MAX_WORKERS = "4"
 $env:LIBRA_COMMITTEE_LLM_REPAIR_ATTEMPTS = "1"
 $env:LIBRA_DROP_INVALID_MEDIATOR_TARGETS = "true"
 $env:LIBRA_COMMITTEE_OPINION_REASONING_CHARS = "420"
+if ($GovernancePreset) {
+    $env:LIBRA_GOVERNANCE_PRESET = $GovernancePreset
+} else {
+    Remove-Item Env:LIBRA_GOVERNANCE_PRESET -ErrorAction SilentlyContinue
+}
+if ($PromptVariant) {
+    $env:LIBRA_PROMPT_VARIANT = $PromptVariant
+} else {
+    Remove-Item Env:LIBRA_PROMPT_VARIANT -ErrorAction SilentlyContinue
+}
 
 $Fixture = Join-Path $OutDir "comparison-fixture.json"
 $BundlesDir = Join-Path $OutDir "ingest-bundles-article"
@@ -80,7 +95,8 @@ if ($Force) {
     }
 }
 
-$expectedRows = (Get-Content $Fixture -Raw | ConvertFrom-Json).prices.Count
+$sourceFixtureRows = (Get-Content $Fixture -Raw | ConvertFrom-Json).prices.Count
+$expectedRows = if ($Limit -gt 0) { [Math]::Min($Limit, $sourceFixtureRows) } else { $sourceFixtureRows }
 $args = @(
     (Join-Path $RepoRoot "scripts\replay_full_committee_backtest.py"),
     "--fixture", $Fixture,
@@ -95,6 +111,9 @@ $args = @(
     "--fail-on-fallback-events",
     "--progress-every", "10"
 )
+if ($Limit -gt 0) {
+    $args += @("--limit", [string]$Limit)
+}
 
 $process = Start-Process `
     -FilePath $Python `
@@ -121,9 +140,13 @@ $pidPayload = [ordered]@{
     trace_out = $TraceOut
     stdout_log = $StdoutLog
     stderr_log = $StderrLog
+    source_fixture_rows = $sourceFixtureRows
     expected_rows = $expectedRows
+    requested_limit = $Limit
     backend = "anthropic"
     model = $Model
+    governance_preset = if ($GovernancePreset) { $GovernancePreset } else { "default" }
+    prompt_variant = if ($PromptVariant) { $PromptVariant } else { "default" }
     runtime = "JudgeOrchestrator.run_v1_committee"
     domain_agents_enabled = $env:LIBRA_DOMAIN_AGENTS_ENABLED
     disable_agent_fallbacks = $env:LIBRA_DISABLE_AGENT_FALLBACKS
