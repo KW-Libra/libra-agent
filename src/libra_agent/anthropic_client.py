@@ -4,6 +4,7 @@ import json
 import os
 from collections.abc import Mapping
 from datetime import UTC, datetime
+import threading
 from typing import Any
 
 import httpx
@@ -11,6 +12,7 @@ import httpx
 from .errors import ChatClientError
 
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 45.0
+_USAGE_LOG_LOCK = threading.Lock()
 
 
 class AnthropicClientError(ChatClientError):
@@ -175,8 +177,10 @@ class AnthropicChatClient:
                 "stop_reason": self._string_or_none(payload.get("stop_reason")),
                 "usage": self._sanitize_usage(payload.get("usage")),
             }
-            with open(log_path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+            with _USAGE_LOG_LOCK:
+                with open(log_path, "a", encoding="utf-8") as handle:
+                    handle.write(line)
         except Exception:
             return
 

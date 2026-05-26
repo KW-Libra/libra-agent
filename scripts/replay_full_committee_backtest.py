@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import threading
 import time
 from typing import Any
 
@@ -419,17 +420,9 @@ class TraceRecorder:
         self.counts: Counter[str] = Counter()
         self.actor_counts: Counter[str] = Counter()
         self.fallback_events = 0
+        self._lock = threading.Lock()
 
     def publish(self, event: str, payload: dict[str, Any]) -> None:
-        self.counts[event] += 1
-        actor = str(payload.get("actor") or payload.get("agent_id") or "")
-        if actor:
-            self.actor_counts[actor] += 1
-        phase = str(payload.get("phase") or "")
-        if "fallback" in event or "fallback" in phase or "fallback" in str(payload.get("reason") or ""):
-            self.fallback_events += 1
-        if self.path is None:
-            return
         compact = {
             "created_at": datetime.now(timezone.utc).isoformat(),
             "event": event,
@@ -437,14 +430,28 @@ class TraceRecorder:
         for key in TRACE_KEYS:
             if key in payload:
                 compact[key] = payload[key]
-        _append_jsonl(self.path, compact)
+        with self._lock:
+            self.counts[event] += 1
+            actor = str(payload.get("actor") or payload.get("agent_id") or "")
+            if actor:
+                self.actor_counts[actor] += 1
+            phase = str(payload.get("phase") or "")
+            if (
+                "fallback" in event
+                or "fallback" in phase
+                or "fallback" in str(payload.get("reason") or "")
+            ):
+                self.fallback_events += 1
+            if self.path is not None:
+                _append_jsonl(self.path, compact)
 
     def summary(self) -> dict[str, Any]:
-        return {
-            "event_counts": dict(sorted(self.counts.items())),
-            "actor_counts": dict(sorted(self.actor_counts.items())),
-            "fallback_events": self.fallback_events,
-        }
+        with self._lock:
+            return {
+                "event_counts": dict(sorted(self.counts.items())),
+                "actor_counts": dict(sorted(self.actor_counts.items())),
+                "fallback_events": self.fallback_events,
+            }
 
 
 def replay(args: argparse.Namespace) -> dict[str, Any]:
