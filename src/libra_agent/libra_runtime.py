@@ -2023,6 +2023,7 @@ class JudgeOrchestrator:
             ips=ips,
             kyc=kyc,
             market_data=market_data,
+            candidate_plan=candidate_plan,
             mediator_client=self.client,
             final_judge_client=self.client,
         )

@@ -20,7 +20,13 @@ from libra_agent.runtime.debate_events import (
 
 from .compliance import build_compliance_context_from_portfolio, default_compliance_engine
 from .governance_config import load_governance_config
-from .judge.final import compute_tentative_trades, render_rule_based_final_decision
+from .judge.final import (
+    can_auto_resolve_conflict,
+    candidate_plan_to_trades,
+    cash_neutral_trades,
+    compute_tentative_trades,
+    render_rule_based_final_decision,
+)
 from .mediator import consensus_by_subject, select_targets
 from .schemas.agent import AgentOpinion, Direction, Vote
 from .schemas.compliance import ComplianceCheck, MarketSnapshot
@@ -180,6 +186,7 @@ class CommitteeRuntime:
         kyc: KYCProfile | None = None,
         market_data: MarketSnapshot | None = None,
         round2_opinions: list[AgentOpinion] | None = None,
+        candidate_plan: Mapping[str, float] | None = None,
         mediator_client: Any | None = None,
         final_judge_client: Any | None = None,
     ) -> CommitteeRunResult:
@@ -211,6 +218,7 @@ class CommitteeRuntime:
             ips=ips,
             kyc=kyc,
             market_data=market_data,
+            candidate_plan=candidate_plan,
             final_judge_client=final_judge_client,
             round1_responses=responses,
         )
@@ -224,6 +232,7 @@ class CommitteeRuntime:
         ips: IPSConfig | None = None,
         kyc: KYCProfile | None = None,
         market_data: MarketSnapshot | None = None,
+        candidate_plan: Mapping[str, float] | None = None,
         mediator_client: Any | None = None,
         final_judge_client: Any | None = None,
     ) -> CommitteeRunResult:
@@ -289,6 +298,7 @@ class CommitteeRuntime:
             ips=ips,
             kyc=kyc,
             market_data=market_data,
+            candidate_plan=candidate_plan,
             final_judge_client=final_judge_client,
             round1_responses=round1_responses,
             round2_responses=round2_responses,
@@ -305,6 +315,7 @@ class CommitteeRuntime:
         ips: IPSConfig | None,
         kyc: KYCProfile | None,
         market_data: MarketSnapshot | None,
+        candidate_plan: Mapping[str, float] | None,
         final_judge_client: Any | None,
         round1_responses: list[AgentResponse] | None = None,
         round2_responses: list[AgentResponse] | None = None,
@@ -316,7 +327,13 @@ class CommitteeRuntime:
         for opinion in all_opinions:
             for vote in opinion.votes:
                 votes_by_subject[vote.subject].append(vote)
-        tentative_trades = compute_tentative_trades(consensus, votes_by_subject)
+        tentative_trades = cash_neutral_trades(
+            compute_tentative_trades(consensus, votes_by_subject)
+        )
+        if not tentative_trades:
+            candidate_trades = candidate_plan_to_trades(candidate_plan)
+            if can_auto_resolve_conflict(consensus, candidate_trades):
+                tentative_trades = candidate_trades
 
         after_ctx = build_compliance_context_from_portfolio(
             portfolio,
@@ -331,6 +348,7 @@ class CommitteeRuntime:
             consensus_per_subject=consensus,
             votes=all_votes,
             compliance_after=compliance_after,
+            candidate_trades=tentative_trades,
         )
         if final_judge_client is not None:
             final_decision = _fill_final_decision_with_llm(

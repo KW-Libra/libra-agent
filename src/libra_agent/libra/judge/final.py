@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 
 from ..schemas.agent import Direction, Vote
 from ..schemas.compliance import ComplianceCheck
@@ -15,6 +16,8 @@ from ..schemas.decision import (
 )
 
 WEAK_CONSERVATIVE_COEF = 0.5
+MAX_CONFLICT_RESOLUTION_DELTA_PCT = 10.0
+MIN_EXECUTABLE_DELTA_PCT = 0.1
 
 
 def determine_branch(
@@ -81,11 +84,112 @@ def compute_tentative_trades(
     return trades
 
 
+def candidate_plan_to_trades(
+    candidate_plan: Mapping[str, float] | None,
+    *,
+    max_abs_delta_pct: float = MAX_CONFLICT_RESOLUTION_DELTA_PCT,
+    min_abs_delta_pct: float = MIN_EXECUTABLE_DELTA_PCT,
+) -> list[Trade]:
+    """Convert a service candidate plan into executable percentage-point trades.
+
+    ``candidate_rebalance_plan`` uses fractional weights, while v1 governance
+    trades use percentage points. Conflict resolution keeps the plan cash-neutral
+    and caps each leg so a single oversized drift does not become a handoff-only
+    outcome.
+    """
+    raw: dict[str, float] = {}
+    for ticker, delta in dict(candidate_plan or {}).items():
+        subject = str(ticker).strip()
+        if not subject:
+            continue
+        try:
+            value = float(delta)
+        except (TypeError, ValueError):
+            continue
+        if abs(value) * 100.0 < min_abs_delta_pct:
+            continue
+        capped = max(-max_abs_delta_pct / 100.0, min(max_abs_delta_pct / 100.0, value))
+        raw[subject] = capped
+    if not raw:
+        return []
+
+    positive_total = sum(delta for delta in raw.values() if delta > 0)
+    negative_total = -sum(delta for delta in raw.values() if delta < 0)
+    if positive_total <= 0 or negative_total <= 0:
+        return []
+
+    executable_total = min(positive_total, negative_total)
+    pos_scale = executable_total / positive_total
+    neg_scale = executable_total / negative_total
+
+    trades: list[Trade] = []
+    for subject in sorted(raw):
+        delta = raw[subject]
+        scaled = delta * (pos_scale if delta > 0 else neg_scale)
+        delta_pct = round(scaled * 100.0, 1)
+        if abs(delta_pct) < min_abs_delta_pct:
+            continue
+        trades.append(
+            Trade(
+                subject=subject,
+                delta_pct=delta_pct,
+                rationale=(
+                    "포트폴리오 레벨 충돌을 direct-indexing drift 초안으로 해소한 "
+                    "10%p cap 현금중립 부분 리밸런싱"
+                ),
+            )
+        )
+    return trades
+
+
+def cash_neutral_trades(
+    trades: list[Trade],
+    *,
+    min_abs_delta_pct: float = MIN_EXECUTABLE_DELTA_PCT,
+) -> list[Trade]:
+    executable = [trade for trade in trades if abs(float(trade.delta_pct)) >= min_abs_delta_pct]
+    if not executable:
+        return []
+    positive_total = sum(float(trade.delta_pct) for trade in executable if trade.delta_pct > 0)
+    negative_total = -sum(float(trade.delta_pct) for trade in executable if trade.delta_pct < 0)
+    if positive_total <= 0 or negative_total <= 0:
+        return []
+
+    executable_total = min(positive_total, negative_total)
+    pos_scale = executable_total / positive_total
+    neg_scale = executable_total / negative_total
+    balanced: list[Trade] = []
+    for trade in executable:
+        scale = pos_scale if trade.delta_pct > 0 else neg_scale
+        delta_pct = round(float(trade.delta_pct) * scale, 1)
+        if abs(delta_pct) < min_abs_delta_pct:
+            continue
+        balanced.append(
+            Trade(subject=trade.subject, delta_pct=delta_pct, rationale=trade.rationale)
+        )
+    return balanced
+
+
+def can_auto_resolve_conflict(
+    consensus_per_subject: dict[str, ConsensusScore],
+    candidate_trades: list[Trade],
+) -> bool:
+    if not candidate_trades:
+        return False
+    conflict_subjects = {
+        subject
+        for subject, score in consensus_per_subject.items()
+        if score.branch == ConsensusBranch.CONFLICT
+    }
+    return conflict_subjects == {"PORTFOLIO"}
+
+
 def render_rule_based_final_decision(
     *,
     consensus_per_subject: dict[str, ConsensusScore],
     votes: list[Vote],
     compliance_after: ComplianceCheck,
+    candidate_trades: list[Trade] | None = None,
 ) -> FinalDecision:
     """Deterministic final branch renderer used before Final Judge LLM wiring.
 
@@ -97,7 +201,18 @@ def render_rule_based_final_decision(
     grouped: dict[str, list[Vote]] = defaultdict(list)
     for vote in votes:
         grouped[vote.subject].append(vote)
-    trades = compute_tentative_trades(consensus_per_subject, grouped)
+    trades = cash_neutral_trades(
+        list(candidate_trades or compute_tentative_trades(consensus_per_subject, grouped))
+    )
+    auto_resolved_conflict = can_auto_resolve_conflict(consensus_per_subject, trades)
+    if (
+        decision == DecisionType.USER_DECISION_REQUIRED
+        and branch == DecisionBranch.STRONG_CONFLICT
+        and auto_resolved_conflict
+        and compliance_after.can_proceed
+    ):
+        decision = DecisionType.REBALANCE
+        branch = DecisionBranch.CONFLICT_RESOLUTION
     if decision == DecisionType.REBALANCE and not trades:
         decision = DecisionType.DEFER
         branch = DecisionBranch.NO_EXECUTABLE_TRADE
@@ -142,14 +257,19 @@ def render_rule_based_final_decision(
         )
     if decision == DecisionType.HOLD:
         trades = []
+    if branch == DecisionBranch.CONFLICT_RESOLUTION:
+        reasoning = (
+            "포트폴리오 레벨 의견 충돌은 있었지만, direct-indexing drift 초안이 "
+            "10%p cap과 현금중립 조건을 만족해 부분 리밸런싱으로 자동 해소합니다."
+        )
+    elif decision == DecisionType.DEFER and not trades:
+        reasoning = "리밸런싱 합의는 있었지만 실행 가능한 종목별 거래가 없어 자동 체결을 보류합니다."
+    else:
+        reasoning = f"{branch.value} 분기에 따라 결정했습니다."
     return FinalDecision(
         decision=decision,
         branch=branch,
         trades=trades,
         compliance_check=compliance_after,
-        reasoning=(
-            "리밸런싱 합의는 있었지만 실행 가능한 종목별 거래가 없어 자동 체결을 보류합니다."
-            if decision == DecisionType.DEFER and not trades
-            else f"{branch.value} 분기에 따라 결정했습니다."
-        ),
+        reasoning=reasoning,
     )

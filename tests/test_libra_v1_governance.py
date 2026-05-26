@@ -12,7 +12,12 @@ from libra_agent.libra.compliance import (
     build_compliance_context_from_portfolio,
     default_compliance_engine,
 )
-from libra_agent.libra.judge.final import determine_branch, render_rule_based_final_decision
+from libra_agent.libra.judge.final import (
+    candidate_plan_to_trades,
+    cash_neutral_trades,
+    determine_branch,
+    render_rule_based_final_decision,
+)
 from libra_agent.libra.mediator import (
     classify_branch,
     compute_consensus,
@@ -208,6 +213,97 @@ class LibraV1GovernanceTests(unittest.TestCase):
         self.assertEqual(rendered.decision, DecisionType.DEFER)
         self.assertEqual(rendered.branch, DecisionBranch.NO_EXECUTABLE_TRADE)
         self.assertEqual(rendered.trades, [])
+
+    def test_portfolio_conflict_can_use_capped_candidate_plan(self) -> None:
+        portfolio = PortfolioSnapshot.from_dict(
+            {
+                "generated_at": "2026-05-10T09:00:00+09:00",
+                "holdings": [
+                    {"ticker": "A", "company_name": "A", "weight": 0.34, "sector": "EQUITY"},
+                    {"ticker": "B", "company_name": "B", "weight": 0.14, "sector": "EQUITY"},
+                    {"ticker": "C", "company_name": "C", "weight": 0.16, "sector": "EQUITY"},
+                    {"ticker": "D", "company_name": "D", "weight": 0.18, "sector": "EQUITY"},
+                    {"ticker": "E", "company_name": "E", "weight": 0.18, "sector": "EQUITY"},
+                ],
+                "cash_weight": 0.0,
+            }
+        )
+        votes = [
+            Vote("PORTFOLIO", Direction.DECREASE, -10.0, 0.75),
+            Vote("PORTFOLIO", Direction.INCREASE, 10.0, 0.75),
+            Vote("PORTFOLIO", Direction.HOLD, 0.0, 0.6),
+        ]
+        consensus = consensus_by_subject(
+            [
+                AgentOpinion("Risk", votes=[votes[0]]),
+                AgentOpinion("Macro", votes=[votes[1]]),
+                AgentOpinion("Sentiment", votes=[votes[2]]),
+            ]
+        )
+        candidate_trades = candidate_plan_to_trades({"A": -0.14, "B": 0.06, "C": 0.05})
+        compliance_after = default_compliance_engine().check(
+            build_compliance_context_from_portfolio(
+                portfolio,
+                proposed_trades=candidate_trades,
+                ips=IPSConfig(single_ticker_limit_pct=100.0, sector_limit_pct=100.0),
+                kyc=persona_v1_kyc(),
+            ),
+            "AFTER",
+        )
+
+        rendered = render_rule_based_final_decision(
+            consensus_per_subject=consensus,
+            votes=votes,
+            compliance_after=compliance_after,
+            candidate_trades=candidate_trades,
+        )
+
+        self.assertEqual(rendered.decision, DecisionType.REBALANCE)
+        self.assertEqual(rendered.branch, DecisionBranch.CONFLICT_RESOLUTION)
+        self.assertEqual(
+            {trade.subject: trade.delta_pct for trade in rendered.trades},
+            {"A": -10.0, "B": 5.5, "C": 4.5},
+        )
+        self.assertAlmostEqual(sum(trade.delta_pct for trade in rendered.trades), 0.0)
+
+    def test_ticker_conflict_still_requires_user_decision(self) -> None:
+        votes = [
+            Vote("A", Direction.DECREASE, -8.0, 0.8),
+            Vote("A", Direction.INCREASE, 8.0, 0.8),
+        ]
+        consensus = consensus_by_subject(
+            [AgentOpinion("Risk", votes=[votes[0]]), AgentOpinion("Profit", votes=[votes[1]])]
+        )
+        candidate_trades = candidate_plan_to_trades({"A": -0.08, "B": 0.08})
+        compliance_after = default_compliance_engine().check(
+            build_compliance_context_from_portfolio(
+                _portfolio(),
+                proposed_trades=candidate_trades,
+                ips=IPSConfig(single_ticker_limit_pct=100.0, sector_limit_pct=100.0),
+                kyc=persona_v1_kyc(),
+            ),
+            "AFTER",
+        )
+
+        rendered = render_rule_based_final_decision(
+            consensus_per_subject=consensus,
+            votes=votes,
+            compliance_after=compliance_after,
+            candidate_trades=candidate_trades,
+        )
+
+        self.assertEqual(rendered.decision, DecisionType.USER_DECISION_REQUIRED)
+        self.assertEqual(rendered.branch, DecisionBranch.STRONG_CONFLICT)
+
+    def test_one_sided_trade_consensus_is_not_executable_without_funding_leg(self) -> None:
+        trades = cash_neutral_trades(
+            [
+                Trade("A", 7.2, "매수 신호"),
+                Trade("B", 7.2, "매수 신호"),
+            ]
+        )
+
+        self.assertEqual(trades, [])
 
     def test_compliance_engine_blocks_esg_min_score(self) -> None:
         ctx = build_compliance_context_from_portfolio(
