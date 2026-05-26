@@ -17,6 +17,7 @@ from ..schemas.decision import Trade
 from ..schemas.ips import IPSConfig, KYCProfile
 
 RuleFunction = Callable[[ComplianceContext], list[ComplianceViolation]]
+PERCENT_LIMIT_EPSILON = 0.01
 
 
 class ComplianceEngine:
@@ -143,7 +144,7 @@ def check_ips_single_ticker_limit(ctx: ComplianceContext) -> list[ComplianceViol
     for ticker, weight in _target_portfolio(ctx).items():
         if ticker == "CASH":
             continue
-        if weight > limit:
+        if float(weight) > limit + PERCENT_LIMIT_EPSILON:
             violations.append(
                 _blocking(
                     "IPS_SINGLE_TICKER_LIMIT",
@@ -169,7 +170,7 @@ def check_ips_sector_limit(ctx: ComplianceContext) -> list[ComplianceViolation]:
             [sector],
         )
         for sector, weight in sector_weights.items()
-        if weight > limit
+        if float(weight) > limit + PERCENT_LIMIT_EPSILON
     ]
 
 

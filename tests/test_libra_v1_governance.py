@@ -222,6 +222,29 @@ class LibraV1GovernanceTests(unittest.TestCase):
         self.assertFalse(check.can_proceed)
         self.assertTrue(any(v.rule_id == "ESG_MIN_SCORE" for v in check.violations))
 
+    def test_sector_limit_allows_rounding_noise_at_limit(self) -> None:
+        portfolio = PortfolioSnapshot.from_dict(
+            {
+                "generated_at": "2026-05-10T09:00:00+09:00",
+                "holdings": [
+                    {"ticker": "A", "company_name": "A", "weight": 0.333334, "sector": "EQUITY"},
+                    {"ticker": "B", "company_name": "B", "weight": 0.333334, "sector": "EQUITY"},
+                    {"ticker": "C", "company_name": "C", "weight": 0.333334, "sector": "EQUITY"},
+                ],
+                "cash_weight": 0.0,
+            }
+        )
+        ctx = build_compliance_context_from_portfolio(
+            portfolio,
+            ips=IPSConfig(single_ticker_limit_pct=100.0, sector_limit_pct=100.0, min_cash_pct=0.0),
+            kyc=persona_v1_kyc(),
+        )
+
+        check = default_compliance_engine().check(ctx, "BEFORE")
+
+        self.assertTrue(check.can_proceed)
+        self.assertFalse(any(v.rule_id == "IPS_SECTOR_LIMIT" for v in check.violations))
+
     def test_consensus_ignores_informational_votes_and_selects_conflict_targets(self) -> None:
         opinions = [
             AgentOpinion("Profit", votes=[Vote("069500", Direction.INCREASE, 5.0, 0.9)]),
