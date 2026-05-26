@@ -98,6 +98,9 @@ def render_rule_based_final_decision(
     for vote in votes:
         grouped[vote.subject].append(vote)
     trades = compute_tentative_trades(consensus_per_subject, grouped)
+    if decision == DecisionType.REBALANCE and not trades:
+        decision = DecisionType.DEFER
+        branch = DecisionBranch.NO_EXECUTABLE_TRADE
 
     if branch == DecisionBranch.COMPLIANCE_VETO:
         question = "사용자 정책 또는 IPS 위반이 감지되었습니다. 다음 중 선택해주세요."
@@ -144,5 +147,9 @@ def render_rule_based_final_decision(
         branch=branch,
         trades=trades,
         compliance_check=compliance_after,
-        reasoning=f"{branch.value} 분기에 따라 결정했습니다.",
+        reasoning=(
+            "리밸런싱 합의는 있었지만 실행 가능한 종목별 거래가 없어 자동 체결을 보류합니다."
+            if decision == DecisionType.DEFER and not trades
+            else f"{branch.value} 분기에 따라 결정했습니다."
+        ),
     )

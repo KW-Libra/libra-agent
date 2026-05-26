@@ -183,6 +183,32 @@ class LibraV1GovernanceTests(unittest.TestCase):
         self.assertEqual(rendered.trades, [])
         self.assertEqual(len(rendered.user_options or []), 3)
 
+    def test_rebalance_without_executable_trades_is_deferred(self) -> None:
+        compliance_after = default_compliance_engine().check(
+            build_compliance_context_from_portfolio(
+                _portfolio(),
+                proposed_trades=[],
+                ips=IPSConfig(single_ticker_limit_pct=100.0, sector_limit_pct=100.0),
+                kyc=persona_v1_kyc(),
+            ),
+            "AFTER",
+        )
+        votes = [
+            Vote("PORTFOLIO", Direction.INCREASE, 3.0, 0.8),
+            Vote("PORTFOLIO", Direction.INCREASE, 3.0, 0.8),
+        ]
+        consensus = consensus_by_subject([AgentOpinion("Macro", votes=votes)])
+
+        rendered = render_rule_based_final_decision(
+            consensus_per_subject=consensus,
+            votes=votes,
+            compliance_after=compliance_after,
+        )
+
+        self.assertEqual(rendered.decision, DecisionType.DEFER)
+        self.assertEqual(rendered.branch, DecisionBranch.NO_EXECUTABLE_TRADE)
+        self.assertEqual(rendered.trades, [])
+
     def test_compliance_engine_blocks_esg_min_score(self) -> None:
         ctx = build_compliance_context_from_portfolio(
             _portfolio(),
