@@ -1,11 +1,12 @@
 """
-Sentiment Agent (Imo) -- Phase 2: FinBERT+Ollama, Phase 1: Gemini Flash fallback
+Sentiment Agent (Imo) -- default Claude/domain-router path, optional Phase 2 pipeline.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 
 from .base import AgentVerdict, BaseAgent, PortfolioContext
@@ -32,6 +33,14 @@ class SentimentAgent(BaseAgent):
     # -- Phase 2: FinBERT + Ollama --------------------------------
 
     async def _try_phase2(self, ctx: PortfolioContext) -> AgentVerdict | None:
+        if os.environ.get("LIBRA_SENTIMENT_PHASE2_ENABLED", "").strip().lower() not in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }:
+            return None
         try:
             from libra_agent.sentiment.news_analyzer import analyze_news
 
@@ -85,7 +94,7 @@ class SentimentAgent(BaseAgent):
             logger.warning("[SentimentAgent] Phase2 오류: %s", e)
             return None
 
-    # -- Phase 1: Gemini Flash (fallback) -------------------------
+    # -- Phase 1: domain-router LLM path --------------------------
 
     async def _run_phase1(self, ctx: PortfolioContext) -> AgentVerdict:
         symbols = [h["symbol"] for h in ctx.holdings[:10]]
@@ -149,5 +158,5 @@ class SentimentAgent(BaseAgent):
         result = await self._try_phase2(ctx)
         if result is not None:
             return result
-        logger.info("[SentimentAgent] Phase1 (Gemini) 실행")
+        logger.info("[SentimentAgent] Phase1 domain-router LLM 실행")
         return await self._run_phase1(ctx)

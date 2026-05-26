@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -63,6 +64,7 @@ class AnthropicChatClient:
             raise AnthropicClientError(f"Failed to call Anthropic Messages API: {exc}") from exc
 
         data = response.json()
+        self._log_usage(data)
         content = data.get("content")
         text = self._extract_text(content)
         if not text.strip():
@@ -108,7 +110,9 @@ class AnthropicChatClient:
         except httpx.HTTPError as exc:
             raise AnthropicClientError(f"Failed to call Anthropic Messages API: {exc}") from exc
 
-        return self._extract_tool_input(response.json().get("content"), tool_name=tool_name)
+        data = response.json()
+        self._log_usage(data)
+        return self._extract_tool_input(data.get("content"), tool_name=tool_name)
 
     def ensure_available(self) -> None:
         self._validate_api_key()
@@ -154,6 +158,49 @@ class AnthropicChatClient:
             return max(1.0, float(raw))
         except ValueError:
             return DEFAULT_REQUEST_TIMEOUT_SECONDS
+
+    def _log_usage(self, payload: Any) -> None:
+        log_path = os.environ.get("LIBRA_LLM_USAGE_LOG")
+        if not log_path or not log_path.strip() or not isinstance(payload, Mapping):
+            return
+        try:
+            log_dir = os.path.dirname(log_path)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            record = {
+                "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "provider": "anthropic",
+                "model": self._string_or_none(payload.get("model")) or self.model,
+                "id": self._string_or_none(payload.get("id")),
+                "stop_reason": self._string_or_none(payload.get("stop_reason")),
+                "usage": self._sanitize_usage(payload.get("usage")),
+            }
+            with open(log_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        except Exception:
+            return
+
+    def _string_or_none(self, value: Any) -> str | None:
+        return value if isinstance(value, str) else None
+
+    def _sanitize_usage(self, value: Any) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            return {}
+        sanitized = self._sanitize_json_value(value)
+        return dict(sanitized) if isinstance(sanitized, Mapping) else {}
+
+    def _sanitize_json_value(self, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {
+                str(key): self._sanitize_json_value(item)
+                for key, item in value.items()
+                if isinstance(key, (str, int, float, bool))
+            }
+        if isinstance(value, list):
+            return [self._sanitize_json_value(item) for item in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
 
     def _extract_text(self, content: Any) -> str:
         if isinstance(content, str):

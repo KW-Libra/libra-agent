@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import unittest
+from datetime import UTC, datetime
+from unittest.mock import patch
 
 import httpx
 
@@ -44,6 +47,47 @@ class AnthropicChatClientTests(unittest.TestCase):
 
         self.assertEqual(payload, {"decision": "HOLD", "confidence": 0.72})
         self.assertEqual(len(requests), 1)
+
+    def test_chat_json_appends_usage_log_record(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg_test",
+                    "model": "claude-response-model",
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "input_tokens": 11,
+                        "output_tokens": 7,
+                    },
+                    "content": [{"type": "text", "text": '{"decision":"BUY"}'}],
+                },
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            usage_log = os.path.join(temp_dir, "usage.jsonl")
+            client = AnthropicChatClient(
+                api_key="test-key",
+                model="claude-test",
+                transport=httpx.MockTransport(handler),
+            )
+
+            with patch.dict(os.environ, {"LIBRA_LLM_USAGE_LOG": usage_log}):
+                payload = client.chat_json(system_prompt="system", user_prompt="user")
+
+            self.assertEqual(payload, {"decision": "BUY"})
+            with open(usage_log, encoding="utf-8") as handle:
+                records = [json.loads(line) for line in handle]
+            self.assertEqual(len(records), 1)
+            record = records[0]
+            created_at = datetime.fromisoformat(record["created_at"].replace("Z", "+00:00"))
+            self.assertEqual(created_at.tzinfo, UTC)
+            self.assertEqual(record["provider"], "anthropic")
+            self.assertEqual(record["model"], "claude-response-model")
+            self.assertEqual(record["id"], "msg_test")
+            self.assertEqual(record["stop_reason"], "end_turn")
+            self.assertEqual(record["usage"]["input_tokens"], 11)
+            self.assertEqual(record["usage"]["output_tokens"], 7)
 
     def test_ensure_available_checks_models_endpoint(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -102,6 +146,104 @@ class AnthropicChatClientTests(unittest.TestCase):
 
         self.assertEqual(payload, {"decision": "HOLD"})
         self.assertEqual(len(requests), 1)
+
+    def test_chat_json_tool_appends_usage_log_record(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg_tool_test",
+                    "model": "claude-test",
+                    "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 21, "output_tokens": 9},
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "submit_result",
+                            "id": "toolu_test",
+                            "input": {"decision": "SELL"},
+                        }
+                    ],
+                },
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            usage_log = os.path.join(temp_dir, "usage.jsonl")
+            client = AnthropicChatClient(
+                api_key="test-key",
+                model="claude-test",
+                transport=httpx.MockTransport(handler),
+            )
+
+            with patch.dict(os.environ, {"LIBRA_LLM_USAGE_LOG": usage_log}):
+                payload = client.chat_json_tool(
+                    system_prompt="system",
+                    user_prompt="user",
+                    tool_name="submit_result",
+                    tool_description="submit strict result",
+                    input_schema={"type": "object"},
+                )
+
+            self.assertEqual(payload, {"decision": "SELL"})
+            with open(usage_log, encoding="utf-8") as handle:
+                records = [json.loads(line) for line in handle]
+            self.assertEqual(len(records), 1)
+            record = records[0]
+            datetime.fromisoformat(record["created_at"].replace("Z", "+00:00"))
+            self.assertEqual(record["provider"], "anthropic")
+            self.assertEqual(record["model"], "claude-test")
+            self.assertEqual(record["id"], "msg_tool_test")
+            self.assertEqual(record["stop_reason"], "tool_use")
+            self.assertEqual(record["usage"], {"input_tokens": 21, "output_tokens": 9})
+
+    def test_usage_logging_failure_does_not_raise(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg_test",
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1},
+                    "content": [{"type": "text", "text": '{"decision":"HOLD"}'}],
+                },
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = AnthropicChatClient(
+                api_key="test-key",
+                model="claude-test",
+                transport=httpx.MockTransport(handler),
+            )
+
+            with patch.dict(os.environ, {"LIBRA_LLM_USAGE_LOG": temp_dir}):
+                payload = client.chat_json(system_prompt="system", user_prompt="user")
+
+        self.assertEqual(payload, {"decision": "HOLD"})
+
+    def test_usage_logging_creates_parent_directory(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg_nested",
+                    "usage": {"input_tokens": 3, "output_tokens": 2},
+                    "content": [{"type": "text", "text": '{"decision":"HOLD"}'}],
+                },
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            usage_log = os.path.join(temp_dir, "nested", "usage.jsonl")
+            client = AnthropicChatClient(
+                api_key="test-key",
+                model="claude-test",
+                transport=httpx.MockTransport(handler),
+            )
+
+            with patch.dict(os.environ, {"LIBRA_LLM_USAGE_LOG": usage_log}):
+                payload = client.chat_json(system_prompt="system", user_prompt="user")
+
+            self.assertEqual(payload, {"decision": "HOLD"})
+            self.assertTrue(os.path.exists(usage_log))
 
     def test_missing_api_key_fails_before_http_call(self) -> None:
         client = AnthropicChatClient(api_key="", model="claude-test")

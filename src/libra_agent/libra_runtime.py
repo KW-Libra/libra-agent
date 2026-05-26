@@ -927,6 +927,16 @@ class LocalKnowledgeBase:
         return event_direction_score(event)
 
 
+def _agent_fallbacks_disabled() -> bool:
+    return os.getenv("LIBRA_DISABLE_AGENT_FALLBACKS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+
+
 class LLMAgent:
     def __init__(
         self,
@@ -951,6 +961,9 @@ class LLMAgent:
         knowledge_base: LocalKnowledgeBase,
         depth: str = "medium",
     ) -> AgentResponse:
+        strict_no_fallback = _agent_fallbacks_disabled()
+        if strict_no_fallback:
+            fallback = None
         tool_loop = self._run_tool_loop(
             query=query,
             context=context,
@@ -1060,6 +1073,10 @@ class LLMAgent:
                 model=str(getattr(self.client, "model", "unknown")),
                 error=exc,
             )
+            if strict_no_fallback:
+                raise ChatClientError(
+                    f"{self.agent_id} agent LLM response failed and local fallback is disabled."
+                ) from exc
             response = self._local_fallback_response(
                 query=query,
                 turn_number=turn_number,
@@ -1086,6 +1103,10 @@ class LLMAgent:
                     depth=depth,
                 )
             except (ChatClientError, ValueError, TypeError) as exc:
+                if strict_no_fallback:
+                    raise ChatClientError(
+                        f"{self.agent_id} agent LLM repair failed and local fallback is disabled."
+                    ) from exc
                 response = self._local_fallback_response(
                     query=query,
                     turn_number=turn_number,
@@ -1096,6 +1117,10 @@ class LLMAgent:
                     reason=f"agent_response_repair failed: {type(exc).__name__}",
                 )
         if self._is_low_signal_response(response):
+            if strict_no_fallback:
+                raise ChatClientError(
+                    f"{self.agent_id} agent response remained sparse and local fallback is disabled."
+                )
             response = self._local_fallback_response(
                 query=query,
                 turn_number=turn_number,
