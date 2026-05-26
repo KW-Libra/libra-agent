@@ -811,6 +811,7 @@ def build_results(
             "mdd_not_worse_than_threshold": float(main_v3["max_drawdown_pct"]) >= float(threshold_row["max_drawdown_pct"]),
             "cost_not_worse_than_threshold": float(main_v3["transaction_cost_krw"]) <= float(threshold_row["transaction_cost_krw"]),
             "trades_not_worse_than_threshold": int(main_v3["trades"]) <= int(threshold_row["trades"]),
+            "is_performance_proof": False,
         }
     ranked = sorted(rows, key=lambda item: float(item["ending_value_krw"]), reverse=True)
     decision_count, trace_complete_count, user_handoff_count, rebalance_count = _decision_counts(fixture)
@@ -830,7 +831,10 @@ def build_results(
             "confirmation_execution_lag_days": confirmation_execution_lag_days,
             "threshold": threshold,
             "execution_target": execution_target,
-            "pre_registered_role": "main LIBRA-v3 execution policy",
+            "pre_registered_role": (
+                "sensitivity reference only; not a validated product policy unless a "
+                "separate in-loop replay is run with this execution rule"
+            ),
         },
         "baselines": baselines,
         "candidates": candidates,
@@ -840,6 +844,8 @@ def build_results(
             "The replay raw is the single LLM decision source; strategy rows do not rerun Claude.",
             "LIBRA v1 Immediate Execution uses final decision candidate_rebalance_plan deltas on the signal date.",
             "LIBRA-v3 Confirmation Gate keeps the REBALANCE signal fixed, observes residual drift after T+N, and executes after the configured lag.",
+            "T+N rows are sensitivity analysis only. They are not valid proof of a v3 service backtest because later LLM inputs would differ after skipped or delayed executions.",
+            "Do not present any T+N policy as final unless it is replayed in-loop so portfolio state changes feed into subsequent LLM calls.",
             "Delayed Execution rows are timing-only sensitivity checks and should not be presented as confirmation.",
             "Risk Parity is a high-turnover quantitative benchmark, not the product's low-frequency target behavior.",
         ],
@@ -900,13 +906,14 @@ def _write_md(payload: dict[str, Any], path: Path) -> None:
         f"Raw replay: `{payload['raw_replay']}`",
         f"Source fixture: `{payload['source_fixture']}`",
         "",
-        "## Main Policy",
+        "## Sensitivity Reference",
         "",
         f"- {payload['main_policy']['name']}",
+        "- Status: not a final validated policy",
         f"- Confirmation lag: {payload['main_policy']['confirmation_execution_lag_days']} trading day(s)",
         f"- Execution target: `{payload['main_policy']['execution_target']}`",
         "",
-        "## Performance Checks",
+        "## Reference Checks",
         "",
     ]
     if checks:
