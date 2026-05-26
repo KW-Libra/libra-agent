@@ -19,6 +19,7 @@ from libra_agent.runtime.debate_events import (
 )
 
 from .compliance import build_compliance_context_from_portfolio, default_compliance_engine
+from .governance_config import load_governance_config
 from .judge.final import compute_tentative_trades, render_rule_based_final_decision
 from .mediator import consensus_by_subject, select_targets
 from .schemas.agent import AgentOpinion, Direction, Vote
@@ -124,10 +125,11 @@ def agent_response_to_opinion(response: AgentResponse, *, round_number: int = 1)
         )
         for subject in subjects
     ]
+    cfg = load_governance_config()
     if (
         direction == Direction.HOLD
-        and response.confidence <= 0.05
-        and agent in {"news", "report", "sentiment"}
+        and response.confidence <= cfg.hold_silence_confidence_threshold
+        and agent in cfg.hold_silence_agents
     ):
         votes = []
     return AgentOpinion(
@@ -966,7 +968,8 @@ def _display_agent_name(agent_id: str) -> str:
 
 
 def _is_informational(response: AgentResponse) -> bool:
-    if response.agent_id in INFO_AGENTS:
+    cfg = load_governance_config()
+    if response.agent_id in cfg.info_agents:
         return True
     if response.agent_id == "tax" and abs(response.direction) < 0.5:
         return True
@@ -974,9 +977,10 @@ def _is_informational(response: AgentResponse) -> bool:
 
 
 def _direction_from_response(response: AgentResponse) -> Direction:
-    if response.direction > 0.1:
+    cfg = load_governance_config()
+    if response.direction > cfg.direction_threshold:
         return Direction.INCREASE
-    if response.direction < -0.1:
+    if response.direction < -cfg.direction_threshold:
         return Direction.DECREASE
     return Direction.HOLD
 
@@ -984,9 +988,10 @@ def _direction_from_response(response: AgentResponse) -> Direction:
 def _magnitude_from_response(response: AgentResponse, *, direction: Direction) -> float:
     if direction == Direction.HOLD:
         return 0.0
+    cfg = load_governance_config()
     sign = 1.0 if direction == Direction.INCREASE else -1.0
-    scale = max(abs(response.signal_score), response.strength, 0.1)
-    return round(sign * min(10.0, scale * 10.0), 1)
+    scale = max(abs(response.signal_score), response.strength, cfg.magnitude_floor)
+    return round(sign * min(cfg.magnitude_cap_pct, scale * cfg.magnitude_scale_factor), 1)
 
 
 def _concerns_from_response(response: AgentResponse) -> list[str]:
