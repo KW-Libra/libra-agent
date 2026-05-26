@@ -15,6 +15,13 @@
     LIBRA_GOVERNANCE_PRESET = default | aggressive | noise_resist | balanced
                             | info_expand | maximum_aggressive
 
+Regime asymmetry (Week 2 Phase B — [[16]] §4, 2026-05-27):
+    LIBRA_REGIME = neutral | bear | bull               # 기본 neutral, MacroAgent 미도입 시 수동 override
+    LIBRA_GOV_BEAR_SELL_STRONG_THRESHOLD = 0.45        # bear regime에서 SELL signal의 STRONG 임계
+    LIBRA_GOV_BEAR_BUY_STRONG_THRESHOLD = 0.75         # bear regime에서 BUY signal의 STRONG 임계
+    LIBRA_GOV_BULL_BUY_STRONG_THRESHOLD = 0.45         # bull regime mirror
+    LIBRA_GOV_BULL_SELL_STRONG_THRESHOLD = 0.75
+
 개별 항목 override (프리셋과 곱해서 적용):
     LIBRA_GOV_STRONG_CONSENSUS_THRESHOLD = 0.55
     LIBRA_GOV_WEAK_CONSENSUS_THRESHOLD = 0.3
@@ -68,6 +75,14 @@ class GovernanceConfig:
     profit_direction_scale: float = 8.0
     # --- Prompt 변형 ---
     prompt_variant: str = "default"
+    # --- Regime asymmetry (Week 2 Phase B, [[16]] §4) ---
+    # neutral 일 때는 strong_consensus_threshold 사용 (회귀 0).
+    # bear/bull 일 때는 sign-aware 임계 적용.
+    regime: str = "neutral"
+    bear_sell_strong_threshold: float = 0.45
+    bear_buy_strong_threshold: float = 0.75
+    bull_buy_strong_threshold: float = 0.45
+    bull_sell_strong_threshold: float = 0.75
 
 
 _DEFAULT = GovernanceConfig()
@@ -133,6 +148,12 @@ def load_governance_config() -> GovernanceConfig:
     prompt_variant_env = os.environ.get("LIBRA_PROMPT_VARIANT")
     if prompt_variant_env is not None:
         overrides["prompt_variant"] = prompt_variant_env.strip().lower() or _DEFAULT.prompt_variant
+
+    regime_env = os.environ.get("LIBRA_REGIME")
+    if regime_env is not None:
+        regime_clean = regime_env.strip().lower()
+        if regime_clean in {"neutral", "bear", "bull"}:
+            overrides["regime"] = regime_clean
 
     if overrides:
         return replace(cfg, **overrides)

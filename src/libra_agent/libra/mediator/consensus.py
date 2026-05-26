@@ -32,12 +32,27 @@ def classify_branch(votes: list[Vote]) -> ConsensusBranch:
     if hold_ratio >= cfg.strong_hold_ratio_threshold:
         return ConsensusBranch.STRONG_HOLD
 
-    score = abs(compute_consensus(votes))
-    if score >= cfg.strong_consensus_threshold:
+    signed = compute_consensus(votes)
+    abs_score = abs(signed)
+    strong_threshold = _strong_threshold_for(cfg, signed)
+    if abs_score >= strong_threshold:
         return ConsensusBranch.STRONG_CONSENSUS
-    if score >= cfg.weak_consensus_threshold:
+    if abs_score >= cfg.weak_consensus_threshold:
         return ConsensusBranch.WEAK_CONSENSUS
     return ConsensusBranch.CONFLICT
+
+
+def _strong_threshold_for(cfg, signed_score: float) -> float:
+    """Regime-aware STRONG_CONSENSUS 임계.
+
+    neutral 시 default 임계로 회귀 0. bear/bull 일 때만 sign-aware.
+    bear regime: SELL(<0) 임계 ↓, BUY(>0) 임계 ↑ — 하방 신호 빠르게 활성화.
+    """
+    if cfg.regime == "bear":
+        return cfg.bear_sell_strong_threshold if signed_score < 0 else cfg.bear_buy_strong_threshold
+    if cfg.regime == "bull":
+        return cfg.bull_buy_strong_threshold if signed_score > 0 else cfg.bull_sell_strong_threshold
+    return cfg.strong_consensus_threshold
 
 
 def consensus_by_subject(opinions: list[AgentOpinion]) -> dict[str, ConsensusScore]:

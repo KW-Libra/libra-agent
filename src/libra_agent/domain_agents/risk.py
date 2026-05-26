@@ -27,6 +27,10 @@ class RiskAgent(BaseAgent):
     CONCENTRATION_THRESHOLD = 0.25  # 상위 5개 비중 합 > 25%
     MAX_SINGLE_DELTA = 0.10  # 단일 거래 delta > 10% 거부
     VAR_95_LIMIT_PCT = 0.03  # 일일 VaR 95% > 총자산 3% 경고
+    # Week 2 Phase B ([[16]] §1, 2026-05-27) — MDD 개선 단일 동인.
+    # 학계 60/40 표준 변동성 근처. v2 결과 MDD -34% → 학계 예측 -26% 타깃.
+    VOL_TARGET = 0.18  # 연환산 변동성 18% 초과 시 신규 BUY 거부
+    DD_TRIGGER = -0.15  # MDD -15% 초과 (더 큰 손실) 시 강제 de-risking
 
     async def deliberate(self, ctx: PortfolioContext) -> AgentVerdict:
         optimizer = get_optimizer()
@@ -79,8 +83,18 @@ class RiskAgent(BaseAgent):
             signals += [
                 {"label": "VaR 95% (일일)", "value": f"{risk_metrics.var_95:,.0f} KRW"},
                 {"label": "CVaR 95%", "value": f"{risk_metrics.cvar_95:,.0f} KRW"},
-                {"label": "MDD", "value": f"{risk_metrics.mdd:.1%}"},
-                {"label": "연환산 변동성", "value": f"{risk_metrics.volatility:.1%}"},
+                {
+                    "label": "MDD",
+                    "value": f"{risk_metrics.mdd:.1%}",
+                    "threshold": f"{self.DD_TRIGGER:.0%}",
+                    "breached": risk_metrics.mdd < self.DD_TRIGGER,
+                },
+                {
+                    "label": "연환산 변동성",
+                    "value": f"{risk_metrics.volatility:.1%}",
+                    "threshold": f"{self.VOL_TARGET:.0%}",
+                    "breached": risk_metrics.volatility > self.VOL_TARGET,
+                },
                 {"label": "베타", "value": f"{risk_metrics.beta:.2f}"},
             ]
 
@@ -139,6 +153,27 @@ class RiskAgent(BaseAgent):
                 vote = "abstain"
                 confidence = 0.70
                 rationale += f" VaR 95% {var_pct:.1%} — 리스크 허용 한도 검토 필요."
+
+        # Week 2 Phase B — vol targeting + drawdown trigger ([[16]] §1).
+        # DD trigger 는 단일 거래 체크 위에 두어 새 BUY 차단; vol breach 는 abstain.
+        vol_breach = bool(risk_metrics and risk_metrics.volatility > self.VOL_TARGET)
+        dd_breach = bool(risk_metrics and risk_metrics.mdd < self.DD_TRIGGER)
+        has_buy = any(t.get("delta", 0) > 0 for t in ctx.proposed_trades)
+
+        if dd_breach and has_buy:
+            vote = "reject"
+            confidence = 0.85
+            rationale += (
+                f" MDD {risk_metrics.mdd:.1%} ≤ {self.DD_TRIGGER:.0%} — drawdown 트리거 활성,"
+                " 신규 매수 차단 de-risk."
+            )
+        elif vol_breach and has_buy:
+            vote = "reject"
+            confidence = 0.75
+            rationale += (
+                f" 연환산 변동성 {risk_metrics.volatility:.1%} > 목표 {self.VOL_TARGET:.0%}"
+                " — 신규 매수 거부 (vol targeting)."
+            )
 
         for trade in ctx.proposed_trades:
             if abs(trade.get("delta", 0)) > self.MAX_SINGLE_DELTA:
