@@ -1,7 +1,8 @@
 param(
     [string]$OutDir = "D:\Libra\outputs\backtests\kr-objective-2020-2023-opendart-googlenews",
     [string]$EnvFile = "D:\libra-agent\.env.live.local",
-    [string]$RunId = "article-claude-service-v1-committee-full-official",
+    [string]$Model = "claude-sonnet-4-6",
+    [string]$RunId = "",
     [switch]$Force
 )
 
@@ -31,9 +32,14 @@ if (-not $env:ANTHROPIC_API_KEY) {
     throw "ANTHROPIC_API_KEY is required. Put it in $EnvFile or the current environment."
 }
 
+if (-not $RunId) {
+    $modelSlug = $Model.ToLowerInvariant() -replace "[^a-z0-9]+", "-"
+    $RunId = "article-$modelSlug-service-v1-committee-full-official"
+}
+
 $env:PYTHONPATH = "src"
 $env:LIBRA_LLM_PROVIDER = "anthropic"
-$env:LIBRA_ANTHROPIC_MODEL = "claude-sonnet-4-6"
+$env:LIBRA_ANTHROPIC_MODEL = $Model
 $env:LIBRA_DOMAIN_AGENTS_ENABLED = "true"
 $env:LLM_ROUTING_POLICY = "claude"
 $env:LIBRA_DISABLE_AGENT_FALLBACKS = "true"
@@ -85,7 +91,7 @@ $args = @(
     "--usage-log", $UsageLog,
     "--trace-out", $TraceOut,
     "--backend", "anthropic",
-    "--anthropic-model", "claude-sonnet-4-6",
+    "--anthropic-model", $Model,
     "--fail-on-fallback-events",
     "--progress-every", "10"
 )
@@ -117,7 +123,7 @@ $pidPayload = [ordered]@{
     stderr_log = $StderrLog
     expected_rows = $expectedRows
     backend = "anthropic"
-    model = "claude-sonnet-4-6"
+    model = $Model
     runtime = "JudgeOrchestrator.run_v1_committee"
     domain_agents_enabled = $env:LIBRA_DOMAIN_AGENTS_ENABLED
     disable_agent_fallbacks = $env:LIBRA_DISABLE_AGENT_FALLBACKS
