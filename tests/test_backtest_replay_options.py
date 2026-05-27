@@ -54,6 +54,27 @@ class BacktestReplayOptionTests(unittest.TestCase):
             {"2021-01-04", "2021-01-11"},
         )
 
+    def test_portfolio_payload_includes_point_in_time_price_history(self) -> None:
+        prices = [
+            {"date": "2021-01-04", "A": 100.0, "B": 50.0},
+            {"date": "2021-01-05", "A": 110.0, "B": 55.0},
+            {"date": "2021-01-06", "A": 121.0, "B": 60.5},
+        ]
+
+        payload = self.replay._portfolio_payload(
+            day="2021-01-06",
+            price_row=prices[2],
+            prices=prices,
+            price_index=2,
+            shares={"A": 10.0, "B": 20.0},
+            user_preferences=(),
+        )
+
+        holding = next(item for item in payload["holdings"] if item["ticker"] == "A")
+        self.assertEqual([row["date"] for row in holding["ohlcv"]], ["2021-01-04", "2021-01-05", "2021-01-06"])
+        self.assertEqual([round(value, 4) for value in holding["daily_returns"]], [0.1, 0.1])
+        self.assertEqual(holding["ohlcv"][-1]["close"], 121.0)
+
     def test_evaluation_accepts_contiguous_mid_fixture_range(self) -> None:
         source_fixture = {
             "initial_value_krw": 1_000_000,

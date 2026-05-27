@@ -131,7 +131,12 @@ def portfolio_snapshot_to_domain_context(
     JY holdings 는 ``list[dict]`` 이므로 변환이 필요하다.
     """
     jy_holdings: list[dict[str, Any]] = []
+    returns_data: dict[str, list[float]] = {}
     for h in portfolio.holdings:
+        ohlcv = [dict(item) for item in getattr(h, "ohlcv", ()) if isinstance(item, dict)]
+        daily_returns = [float(item) for item in getattr(h, "daily_returns", ())]
+        if daily_returns:
+            returns_data[h.ticker] = daily_returns
         jy_holdings.append(
             {
                 "symbol": h.ticker,
@@ -144,6 +149,7 @@ def portfolio_snapshot_to_domain_context(
                 "sector": h.sector or "기타",
                 "esg_score": h.esg_score,
                 "carbon_intensity": h.carbon_intensity,
+                "ohlcv": ohlcv,
             }
         )
 
@@ -157,6 +163,7 @@ def portfolio_snapshot_to_domain_context(
         total_value=float(portfolio.total_value_krw or 0.0),
         proposed_trades=proposed_trades or [],
         market_context_str=market_context_str,
+        returns_data=returns_data or None,
     )
 
 

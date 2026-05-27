@@ -262,6 +262,8 @@ class PortfolioHolding:
     average_price: float | None = None
     market_value_krw: float | None = None
     unrealized_pnl_krw: float | None = None
+    ohlcv: tuple[dict[str, Any], ...] = ()
+    daily_returns: tuple[float, ...] = ()
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> PortfolioHolding:
@@ -292,6 +294,15 @@ class PortfolioHolding:
             unrealized_pnl_krw=_as_float(payload.get("unrealized_pnl_krw"))
             if payload.get("unrealized_pnl_krw") is not None
             else None,
+            ohlcv=tuple(
+                dict(item)
+                for item in _as_list(payload.get("ohlcv"))
+                if isinstance(item, Mapping)
+            ),
+            daily_returns=tuple(
+                _as_float(item)
+                for item in _as_list(payload.get("daily_returns") or payload.get("returns"))
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -308,6 +319,8 @@ class PortfolioHolding:
             "average_price": self.average_price,
             "market_value_krw": self.market_value_krw,
             "unrealized_pnl_krw": self.unrealized_pnl_krw,
+            "ohlcv": [dict(item) for item in self.ohlcv],
+            "daily_returns": list(self.daily_returns),
         }
 
 

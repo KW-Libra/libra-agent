@@ -144,10 +144,59 @@ def _company_name(ticker: str) -> str:
     return DEFAULT_COMPANY_NAMES.get(ticker, ticker)
 
 
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _price_history_for(
+    prices: list[dict[str, Any]],
+    *,
+    end_index: int,
+    ticker: str,
+    lookback: int = 120,
+) -> list[dict[str, Any]]:
+    start_index = max(0, end_index - lookback + 1)
+    rows: list[dict[str, Any]] = []
+    for row in prices[start_index : end_index + 1]:
+        close = _as_float(row.get(ticker))
+        if close <= 0:
+            continue
+        rows.append(
+            {
+                "date": str(row.get("date") or ""),
+                "close": close,
+                "high": close,
+                "low": close,
+                "volume": 0.0,
+            }
+        )
+    return rows
+
+
+def _daily_returns_from_history(history: list[dict[str, Any]]) -> list[float]:
+    returns: list[float] = []
+    previous_close: float | None = None
+    for row in history:
+        close = _as_float(row.get("close"))
+        if close <= 0:
+            continue
+        if previous_close and previous_close > 0:
+            returns.append(close / previous_close - 1.0)
+        previous_close = close
+    return returns
+
+
 def _portfolio_payload(
     *,
     day: str,
     price_row: dict[str, Any],
+    prices: list[dict[str, Any]],
+    price_index: int,
     shares: dict[str, float],
     user_preferences: tuple[str, ...],
 ) -> dict[str, Any]:
@@ -156,6 +205,7 @@ def _portfolio_payload(
     holdings = []
     for ticker, market_value in sorted(values.items()):
         price = float(price_row[ticker])
+        history = _price_history_for(prices, end_index=price_index, ticker=ticker)
         holdings.append(
             {
                 "ticker": ticker,
@@ -166,6 +216,8 @@ def _portfolio_payload(
                 "last_price": price,
                 "market_value_krw": market_value,
                 "sector": "EQUITY",
+                "ohlcv": history,
+                "daily_returns": _daily_returns_from_history(history),
             }
         )
     return {
@@ -593,10 +645,15 @@ def replay(args: argparse.Namespace) -> dict[str, Any]:
     fixture_path = Path(args.fixture)
     bundles_dir = Path(args.bundles_dir)
     fixture = _read_json(fixture_path)
-    prices = fixture.get("prices") or []
+    raw_prices = fixture.get("prices") or []
+    prices = sorted(
+        (row for row in raw_prices if isinstance(row, dict) and row.get("date")),
+        key=lambda row: str(row.get("date")),
+    )
     if not prices:
         raise RuntimeError("Fixture has no prices.")
-    price_by_date = {str(row["date"]): row for row in prices if isinstance(row, dict) and row.get("date")}
+    price_by_date = {str(row["date"]): row for row in prices}
+    price_index_by_date = {str(row["date"]): index for index, row in enumerate(prices)}
     bundle_rows = _bundle_rows(bundles_dir)
     if args.start_date:
         bundle_rows = [row for row in bundle_rows if str(row.get("prices_until")) >= args.start_date]
@@ -664,6 +721,8 @@ def replay(args: argparse.Namespace) -> dict[str, Any]:
                     _portfolio_payload(
                         day=day,
                         price_row=price_row,
+                        prices=prices,
+                        price_index=price_index_by_date[day],
                         shares=shares,
                         user_preferences=user_preferences,
                     )

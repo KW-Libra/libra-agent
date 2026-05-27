@@ -152,6 +152,41 @@ class DomainContextAdapterTests(unittest.TestCase):
         self.assertEqual(verdict.vote, "abstain")
         self.assertIn("OHLCV", verdict.rationale)
 
+    def test_adapter_preserves_price_history_for_technical_analysis(self) -> None:
+        history = tuple(
+            {
+                "date": f"2026-03-{(index % 28) + 1:02d}",
+                "close": 40_000 + index * 100,
+                "high": 40_000 + index * 100,
+                "low": 40_000 + index * 100,
+                "volume": 0,
+            }
+            for index in range(65)
+        )
+        snapshot = PortfolioSnapshot(
+            generated_at=datetime(2026, 5, 25, 0, 0, tzinfo=UTC),
+            total_value_krw=13_200_000,
+            holdings=(
+                PortfolioHolding(
+                    ticker="035720",
+                    company_name="카카오",
+                    weight=1.0,
+                    shares=293,
+                    last_price=46_400,
+                    market_value_krw=13_200_000,
+                    ohlcv=history,
+                ),
+            ),
+        )
+
+        round_trip = PortfolioSnapshot.from_dict(snapshot.to_dict())
+        ctx = portfolio_snapshot_to_domain_context(round_trip, user_id="test")
+        verdict = asyncio.run(TechnicalAnalysisAgent().deliberate(ctx))
+
+        self.assertEqual(len(ctx.holdings[0]["ohlcv"]), 65)
+        self.assertNotIn("OHLCV 또는 수익률 히스토리가 없어", verdict.rationale)
+        self.assertTrue(any("MA20" in signal["label"] for signal in verdict.signals))
+
 
 if __name__ == "__main__":
     unittest.main()
