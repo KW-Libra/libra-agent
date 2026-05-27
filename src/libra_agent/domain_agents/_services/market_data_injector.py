@@ -32,12 +32,41 @@ from typing import Any
 
 import aiohttp
 
+from libra_agent.libra.cadence_config import load_cadence_config
+
 logger = logging.getLogger(__name__)
 
+
 # ── 신선도 임계값 (초) ────────────────────────────────────────────
-FRESHNESS_PRICE_SEC = int(os.environ.get("DATA_FRESHNESS_THRESHOLD_SEC", 300))  # 5분
-FRESHNESS_NEWS_SEC = int(os.environ.get("NEWS_FRESHNESS_THRESHOLD_SEC", 1800))  # 30분
-FRESHNESS_MACRO_SEC = 86400  # 24시간
+# 우선순위:
+#   1. 명시적 환경 변수 (DATA_FRESHNESS_THRESHOLD_SEC / NEWS_FRESHNESS_THRESHOLD_SEC)
+#   2. 카덴스 설정 (LIBRA_REBALANCE_CADENCE) — 주·월 단위 운영 시 자동 완화
+#   3. daily 기본값 (회귀 0)
+
+
+def _freshness_price_sec() -> int:
+    raw = os.environ.get("DATA_FRESHNESS_THRESHOLD_SEC")
+    if raw is not None:
+        return int(raw)
+    return load_cadence_config().freshness_price_sec
+
+
+def _freshness_news_sec() -> int:
+    raw = os.environ.get("NEWS_FRESHNESS_THRESHOLD_SEC")
+    if raw is not None:
+        return int(raw)
+    return load_cadence_config().freshness_news_sec
+
+
+def _freshness_macro_sec() -> int:
+    return load_cadence_config().freshness_macro_sec
+
+
+# 하위 호환을 위해 모듈 레벨 상수도 유지 (다른 모듈에서 import 가능성).
+# 호출 시점에 변경된 카덴스가 반영되지 않으므로, 새 코드는 위 함수를 사용할 것.
+FRESHNESS_PRICE_SEC = _freshness_price_sec()
+FRESHNESS_NEWS_SEC = _freshness_news_sec()
+FRESHNESS_MACRO_SEC = _freshness_macro_sec()
 
 
 # ── 데이터 신선도 검증 ────────────────────────────────────────────
@@ -74,17 +103,18 @@ class DataFreshnessGuard:
         if not price_data:
             return False, "⚠️ [데이터 경고] 시세 데이터 없음. 최신 가격을 확인할 수 없습니다."
 
+        threshold = _freshness_price_sec()
         stale_symbols = []
         for p in price_data:
             ts = p.get("last_updated_at") or p.get("ts", 0)
             if isinstance(ts, (int, float)):
                 age = time.time() - ts
-                if age > FRESHNESS_PRICE_SEC:
+                if age > threshold:
                     stale_symbols.append(f"{p.get('symbol', '?')}({age / 60:.0f}분전)")
 
         if stale_symbols:
             warning = (
-                f"⚠️ [데이터 경고] 다음 종목의 시세가 {FRESHNESS_PRICE_SEC // 60}분 이상 지연되었습니다: "
+                f"⚠️ [데이터 경고] 다음 종목의 시세가 {threshold // 60}분 이상 지연되었습니다: "
                 f"{', '.join(stale_symbols[:5])}. "
                 f"실시간 판단 시 주의하십시오."
             )
@@ -103,7 +133,7 @@ class DataFreshnessGuard:
         oldest = min(n.get("published_at", time.time()) for n in news_items)
         age = time.time() - oldest
 
-        if age > FRESHNESS_NEWS_SEC:
+        if age > _freshness_news_sec():
             return False, (
                 f"⚠️ [데이터 경고] 뉴스 데이터가 {age / 60:.0f}분 전 데이터입니다. "
                 f"최신 시장 이벤트가 반영되지 않을 수 있습니다."
@@ -119,7 +149,7 @@ class DataFreshnessGuard:
         ts = macro_data.get("fetched_at", 0)
         age = time.time() - ts
 
-        if age > FRESHNESS_MACRO_SEC:
+        if age > _freshness_macro_sec():
             return False, (f"⚠️ [데이터 경고] 경제지표가 {age / 3600:.0f}시간 전 데이터입니다.")
 
         return True, ""
@@ -211,21 +241,29 @@ class MarketDataInjector:
             logger.warning(f"[DataInjector] 매크로 조회 실패: {macro}")
             macro = {}
 
-        # ── Kafka 뉴스 버퍼 병합 ─────────────────────────────
-        # NewsConsumer가 사전에 start()돼 있으면 실시간 헤드라인을 주입
+        # ── Kafka 뉴스 버퍼 병합 (카덴스 게이트) ───────────────
+        # weekly/monthly 운영 시 실시간 스트림은 비용·인프라 대비 가치가 낮아
+        # cadence_config.enable_realtime_stream=False 면 skip.
         kafka_headlines: list[str] = []
-        try:
-            from .news_consumer import get_news_consumer
+        cadence = load_cadence_config()
+        if cadence.enable_realtime_stream:
+            try:
+                from .news_consumer import get_news_consumer
 
-            nc = get_news_consumer()
-            kafka_headlines = nc.get_recent_headlines()
-            if kafka_headlines:
-                logger.info(
-                    "[DataInjector] Kafka 뉴스 버퍼: %d개 헤드라인 주입",
-                    len(kafka_headlines),
-                )
-        except Exception as e:
-            logger.debug("[DataInjector] Kafka 뉴스 버퍼 접근 실패 (무시): %s", e)
+                nc = get_news_consumer()
+                kafka_headlines = nc.get_recent_headlines()
+                if kafka_headlines:
+                    logger.info(
+                        "[DataInjector] Kafka 뉴스 버퍼: %d개 헤드라인 주입",
+                        len(kafka_headlines),
+                    )
+            except Exception as e:
+                logger.debug("[DataInjector] Kafka 뉴스 버퍼 접근 실패 (무시): %s", e)
+        else:
+            logger.debug(
+                "[DataInjector] cadence=%s — 실시간 Kafka 뉴스 버퍼 비활성",
+                cadence.name,
+            )
 
         quality_note = self._freshness.build_data_quality_note(prices, news, macro)
 
@@ -248,7 +286,7 @@ class MarketDataInjector:
                     cache_key = f"price:{sym}"
                     if cache_key in self._cache:
                         dp = self._cache[cache_key]
-                        if not dp.is_stale(FRESHNESS_PRICE_SEC):
+                        if not dp.is_stale(_freshness_price_sec()):
                             results.append(dp.value)
                             continue
 

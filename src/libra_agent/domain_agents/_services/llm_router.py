@@ -48,6 +48,38 @@ class LLMModel(StrEnum):
     CLAUDE_SONNET = "claude-sonnet-4-6"
     GEMINI_FLASH = "gemini-2.5-flash"
     GEMINI_PRO = "gemini-1.5-pro"
+    # 로컬 백엔드 (유료 API 우회용). 실제 모델명은 env 로 주입.
+    LOCAL_OLLAMA = "local-ollama"
+    LOCAL_LLAMA_CPP = "local-llama-cpp"
+
+
+# 유료로 간주되는 모델 집합. LIBRA_LLM_BUDGET=free 일 때 차단/대체 대상.
+# Gemini Flash 는 무료 티어가 있으므로 budget guard 대상에서 제외.
+_PAID_MODELS: frozenset[LLMModel] = frozenset(
+    {
+        LLMModel.CLAUDE_HAIKU,
+        LLMModel.CLAUDE_SONNET,
+        LLMModel.GEMINI_PRO,
+    }
+)
+
+
+def _is_local(model: "LLMModel") -> bool:
+    return model in (LLMModel.LOCAL_OLLAMA, LLMModel.LOCAL_LLAMA_CPP)
+
+
+def _budget_mode() -> str:
+    """LIBRA_LLM_BUDGET = free | paid (default paid). 'free' 시 유료 모델 차단."""
+    return os.environ.get("LIBRA_LLM_BUDGET", "paid").strip().lower()
+
+
+def _local_backend() -> str | None:
+    """LIBRA_LOCAL_LLM_BACKEND = ollama | llama_cpp. 미설정이면 None."""
+    raw = os.environ.get("LIBRA_LOCAL_LLM_BACKEND")
+    if not raw:
+        return None
+    val = raw.strip().lower()
+    return val if val in {"ollama", "llama_cpp"} else None
 
 
 # ── 에이전트별 기본 LLM 배정 ────────────────────────────────────
@@ -157,14 +189,50 @@ class LLMRouter:
     # ── 모델 선택 ───────────────────────────────────────────────
 
     def _select_model(self, agent_id: str) -> LLMModel:
+        # 명시적 로컬 정책 — 무조건 로컬.
+        if self._policy == "local":
+            return self._local_model_or_raise()
+
         if self._policy == "claude":
-            return LLMModel.CLAUDE_SONNET
-        if self._policy == "gemini":
+            preferred = LLMModel.CLAUDE_SONNET
+        elif self._policy == "gemini":
+            preferred = LLMModel.GEMINI_FLASH
+        else:
+            preferred = AGENT_MODEL_MAP.get(agent_id, LLMModel.CLAUDE_HAIKU)
+
+        # Budget guard: free 모드에서 유료 모델이 선택되면 대체.
+        if _budget_mode() == "free" and preferred in _PAID_MODELS:
+            backend = _local_backend()
+            if backend is not None:
+                replacement = self._local_model_or_raise()
+                logger.info(
+                    "[LLMRouter] budget=free → %s 차단, %s 로 대체 (agent=%s)",
+                    preferred.value,
+                    replacement.value,
+                    agent_id,
+                )
+                return replacement
+            # 로컬 백엔드도 없으면 무료 Gemini Flash 로 강등 (throttle 적용).
+            logger.warning(
+                "[LLMRouter] budget=free + 로컬 백엔드 미설정 — %s 호출을 Gemini Flash 무료 티어로 대체"
+                " (agent=%s). 안정성 필요시 LIBRA_LOCAL_LLM_BACKEND=ollama 설정 권장.",
+                preferred.value,
+                agent_id,
+            )
             return LLMModel.GEMINI_FLASH
 
-        # balanced: 에이전트별 최적 배정
-        preferred = AGENT_MODEL_MAP.get(agent_id, LLMModel.CLAUDE_HAIKU)
         return preferred
+
+    def _local_model_or_raise(self) -> LLMModel:
+        backend = _local_backend()
+        if backend == "ollama":
+            return LLMModel.LOCAL_OLLAMA
+        if backend == "llama_cpp":
+            return LLMModel.LOCAL_LLAMA_CPP
+        raise RuntimeError(
+            "로컬 LLM 백엔드가 설정되지 않았습니다. "
+            "LIBRA_LOCAL_LLM_BACKEND=ollama 또는 llama_cpp 를 설정하세요."
+        )
 
     def model_name_for(self, agent_id: str) -> str:
         return self._model_name(self._select_model(agent_id))
@@ -277,6 +345,8 @@ class LLMRouter:
     ) -> str:
         model_name = self._model_name(model)
         try:
+            if _is_local(model):
+                return self._call_local(model, system, user, max_tokens)
             if model in (LLMModel.CLAUDE_HAIKU, LLMModel.CLAUDE_SONNET):
                 return self._call_claude(model_name, system, user, max_tokens)
             else:
@@ -295,7 +365,74 @@ class LLMRouter:
             )
         if model == LLMModel.GEMINI_PRO:
             return os.environ.get("LIBRA_DOMAIN_GEMINI_PRO_MODEL") or model.value
+        if model == LLMModel.LOCAL_OLLAMA:
+            return os.environ.get("LIBRA_OLLAMA_MODEL", "qwen2.5:7b-instruct")
+        if model == LLMModel.LOCAL_LLAMA_CPP:
+            return os.environ.get("LIBRA_LLAMA_CPP_MODEL_ALIAS", "local-llama-cpp")
         return model.value
+
+    # ── 로컬 백엔드 호출 (텍스트 모드, JSON 강제 없음) ──────────
+    # 기존 ollama_client / llama_cpp_client 는 JSON 강제이므로
+    # 자유형 텍스트 응답이 필요한 도메인 에이전트용으로 별도 경로 사용.
+
+    def _call_local(self, model: LLMModel, system: str, user: str, max_tokens: int) -> str:
+        if model == LLMModel.LOCAL_OLLAMA:
+            return self._call_local_ollama(system, user, max_tokens)
+        return self._call_local_llama_cpp(system, user, max_tokens)
+
+    def _call_local_ollama(self, system: str, user: str, max_tokens: int) -> str:
+        import httpx
+
+        host = os.environ.get("LIBRA_OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+        model_name = os.environ.get("LIBRA_OLLAMA_MODEL", "qwen2.5:7b-instruct")
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+            "options": {"temperature": 0.2, "num_predict": max_tokens},
+        }
+        with httpx.Client(timeout=180.0) as client:
+            resp = client.post(f"{host}/api/chat", json=payload)
+            resp.raise_for_status()
+        data = resp.json()
+        content = (data.get("message") or {}).get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("Ollama 응답이 비어있습니다.")
+        return content
+
+    def _call_local_llama_cpp(self, system: str, user: str, max_tokens: int) -> str:
+        import httpx
+
+        host = os.environ.get("LIBRA_LLAMA_CPP_HOST", "127.0.0.1")
+        port = int(os.environ.get("LIBRA_LLAMA_CPP_PORT", "8091"))
+        base_url = f"http://{host}:{port}"
+        payload = {
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.2,
+            "max_tokens": max_tokens,
+            "stream": False,
+        }
+        with httpx.Client(timeout=300.0) as client:
+            resp = client.post(f"{base_url}/v1/chat/completions", json=payload)
+            resp.raise_for_status()
+        data = resp.json()
+        choices = data.get("choices") or []
+        if not choices:
+            raise RuntimeError("llama.cpp 응답에 choices 가 없습니다.")
+        content = (choices[0].get("message") or {}).get("content")
+        if isinstance(content, list):
+            content = "".join(
+                part.get("text", "") for part in content if isinstance(part, dict)
+            )
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError("llama.cpp 응답이 비어있습니다.")
+        return content
 
     def _call_claude(self, model: str, system: str, user: str, max_tokens: int) -> str:
         if not self._claude:
@@ -349,6 +486,8 @@ class LLMRouter:
         return 0.0
 
     def _model_family(self, model: LLMModel) -> str:
+        if _is_local(model):
+            return "Local"
         return "Gemini" if model in (LLMModel.GEMINI_FLASH, LLMModel.GEMINI_PRO) else "Claude"
 
     # ── 크로스 검증 응답 병합 ───────────────────────────────────
