@@ -5,6 +5,7 @@ import os
 from collections.abc import Mapping
 from datetime import UTC, datetime
 import threading
+import time
 from typing import Any
 
 import httpx
@@ -114,18 +115,31 @@ class AnthropicChatClient:
             ],
             "tool_choice": {"type": "tool", "name": tool_name},
         }
-        try:
-            with self._http_client() as client:
-                response = client.post(
-                    f"{self.base_url}/v1/messages", json=payload, headers=self._headers()
-                )
-                response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise AnthropicClientError(f"Failed to call Anthropic Messages API: {exc}") from exc
+        last_error: Exception | None = None
+        for attempt in range(self._chat_json_attempts()):
+            try:
+                with self._http_client() as client:
+                    response = client.post(
+                        f"{self.base_url}/v1/messages", json=payload, headers=self._headers()
+                    )
+                    response.raise_for_status()
+                data = response.json()
+                self._log_usage(data)
+                return self._extract_tool_input(data.get("content"), tool_name=tool_name)
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                if not self._should_retry_http_status(exc) or attempt + 1 >= self._chat_json_attempts():
+                    break
+                self._sleep_before_retry(attempt)
+            except (httpx.HTTPError, AnthropicClientError, json.JSONDecodeError) as exc:
+                last_error = exc
+                if attempt + 1 >= self._chat_json_attempts():
+                    break
+                self._sleep_before_retry(attempt)
 
-        data = response.json()
-        self._log_usage(data)
-        return self._extract_tool_input(data.get("content"), tool_name=tool_name)
+        if isinstance(last_error, AnthropicClientError):
+            raise last_error
+        raise AnthropicClientError(f"Failed to call Anthropic Messages API: {last_error}") from last_error
 
     def ensure_available(self) -> None:
         self._validate_api_key()
@@ -182,6 +196,16 @@ class AnthropicChatClient:
     def _should_retry_http_status(self, exc: httpx.HTTPStatusError) -> bool:
         status_code = exc.response.status_code
         return status_code == 408 or status_code == 409 or status_code == 429 or status_code >= 500
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        raw = os.environ.get("LIBRA_ANTHROPIC_RETRY_SLEEP_SECONDS", "1.0")
+        try:
+            base = max(0.0, float(raw))
+        except ValueError:
+            base = 1.0
+        if base <= 0:
+            return
+        time.sleep(min(base * (2 ** attempt), 10.0))
 
     def _log_usage(self, payload: Any) -> None:
         log_path = os.environ.get("LIBRA_LLM_USAGE_LOG")

@@ -181,6 +181,49 @@ class AnthropicChatClientTests(unittest.TestCase):
         self.assertEqual(payload, {"decision": "HOLD"})
         self.assertEqual(len(requests), 1)
 
+    def test_chat_json_tool_retries_transient_http_status(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if len(requests) == 1:
+                return httpx.Response(529, json={"error": {"message": "overloaded"}})
+            return httpx.Response(
+                200,
+                json={
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "submit_result",
+                            "id": "toolu_test",
+                            "input": {"decision": "REBALANCE"},
+                        }
+                    ]
+                },
+            )
+
+        client = AnthropicChatClient(
+            api_key="test-key",
+            model="claude-test",
+            transport=httpx.MockTransport(handler),
+        )
+
+        with patch.dict(
+            os.environ,
+            {"LIBRA_ANTHROPIC_CHAT_JSON_ATTEMPTS": "2", "LIBRA_ANTHROPIC_RETRY_SLEEP_SECONDS": "0"},
+        ):
+            payload = client.chat_json_tool(
+                system_prompt="system",
+                user_prompt="user",
+                tool_name="submit_result",
+                tool_description="submit strict result",
+                input_schema={"type": "object"},
+                temperature=0.0,
+            )
+
+        self.assertEqual(payload, {"decision": "REBALANCE"})
+        self.assertEqual(len(requests), 2)
+
     def test_chat_json_tool_appends_usage_log_record(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
