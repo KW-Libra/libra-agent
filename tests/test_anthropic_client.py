@@ -89,6 +89,40 @@ class AnthropicChatClientTests(unittest.TestCase):
             self.assertEqual(record["usage"]["input_tokens"], 11)
             self.assertEqual(record["usage"]["output_tokens"], 7)
 
+    def test_chat_json_retries_malformed_json_response(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if len(requests) == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": '{"decision":"HOLD"',
+                            }
+                        ]
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={"content": [{"type": "text", "text": '{"decision":"DEFER"}'}]},
+            )
+
+        client = AnthropicChatClient(
+            api_key="test-key",
+            model="claude-test",
+            transport=httpx.MockTransport(handler),
+        )
+
+        with patch.dict(os.environ, {"LIBRA_ANTHROPIC_CHAT_JSON_ATTEMPTS": "2"}):
+            payload = client.chat_json(system_prompt="system", user_prompt="user")
+
+        self.assertEqual(payload, {"decision": "DEFER"})
+        self.assertEqual(len(requests), 2)
+
     def test_ensure_available_checks_models_endpoint(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             self.assertEqual(request.url.path, "/v1/models")
