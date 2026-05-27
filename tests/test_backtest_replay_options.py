@@ -97,10 +97,12 @@ class BacktestReplayOptionTests(unittest.TestCase):
                 }
             },
             strict=True,
+            provider="unit-test",
         )
 
         self.assertEqual(enriched["prices"][0]["volumes"]["A"], 1_000)
         self.assertEqual(enriched["prices"][1]["volumes"]["A"], 2_000)
+        self.assertEqual(enriched["liquidity_history"]["provider"], "unit-test")
         self.assertEqual(enriched["liquidity_history"]["rows_per_ticker"]["A"], 2)
 
     def test_evaluation_accepts_contiguous_mid_fixture_range(self) -> None:

@@ -276,11 +276,39 @@ def _fetch_ticker_history(
     return dict(sorted(merged.items()))
 
 
+def _fetch_pykrx_history(
+    *,
+    ticker: str,
+    start: date,
+    end: date,
+) -> dict[str, dict[str, float]]:
+    try:
+        from pykrx import stock
+    except ImportError as exc:
+        raise RuntimeError(
+            "pykrx is required for --provider pykrx. Install with `python -m pip install pykrx`."
+        ) from exc
+
+    df = stock.get_market_ohlcv_by_date(_yyyymmdd(start), _yyyymmdd(end), ticker)
+    history: dict[str, dict[str, float]] = {}
+    for index, row in df.iterrows():
+        day = index.strftime("%Y-%m-%d")
+        history[day] = {
+            "open": float(row["시가"]),
+            "high": float(row["고가"]),
+            "low": float(row["저가"]),
+            "close": float(row["종가"]),
+            "volume": float(row["거래량"]),
+        }
+    return dict(sorted(history.items()))
+
+
 def enrich_fixture(
     fixture: Mapping[str, Any],
     *,
     history_by_ticker: Mapping[str, Mapping[str, Mapping[str, float]]],
     strict: bool,
+    provider: str = "KIS inquire-daily-itemchartprice",
 ) -> dict[str, Any]:
     enriched = dict(fixture)
     prices = []
@@ -299,6 +327,8 @@ def enrich_fixture(
             volume = ticker_row.get("volume")
             if volume and volume > 0:
                 volumes[ticker] = volume
+            else:
+                missing.setdefault(ticker, []).append(day)
         if volumes:
             row["volumes"] = volumes
         prices.append(row)
@@ -312,7 +342,7 @@ def enrich_fixture(
             raise RuntimeError(f"KIS volume history missing fixture dates: {samples}")
     enriched["prices"] = prices
     enriched["liquidity_history"] = {
-        "provider": "KIS inquire-daily-itemchartprice",
+        "provider": provider,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "tickers": sorted(history_by_ticker.keys()),
         "rows_per_ticker": {
@@ -325,7 +355,13 @@ def enrich_fixture(
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Attach KIS historical daily volumes to a LIBRA comparison fixture."
+        description="Attach historical daily volumes to a LIBRA comparison fixture."
+    )
+    parser.add_argument(
+        "--provider",
+        default="kis",
+        choices=("kis", "pykrx"),
+        help="Volume source. pykrx is preferred for strict KR historical fixtures; kis uses KIS daily chart.",
     )
     parser.add_argument("--fixture", required=True)
     parser.add_argument("--out", required=True)
@@ -350,30 +386,44 @@ def main() -> None:
     start = min(dates)
     end = max(dates)
     history_by_ticker = {}
-    app_key, app_secret = _credentials()
-    base_url = _kis_base_url()
-    with httpx.Client(timeout=max(1.0, float(args.timeout_seconds))) as client:
-        token = _issue_access_token(client, base_url=base_url, app_key=app_key, app_secret=app_secret)
+    if args.provider == "pykrx":
         for ticker in tickers:
-            history_by_ticker[ticker] = _fetch_ticker_history(
-                client=client,
-                base_url=base_url,
-                app_key=app_key,
-                app_secret=app_secret,
-                token=token,
+            history_by_ticker[ticker] = _fetch_pykrx_history(
                 ticker=ticker,
-                market_code=args.market_code,
                 start=start,
                 end=end,
-                chunk_days=max(1, int(args.chunk_days)),
-                sleep_seconds=max(0.0, float(args.sleep_seconds)),
-                allow_missing=bool(args.allow_missing),
             )
-            print(f"{ticker}: fetched {len(history_by_ticker[ticker])} KIS daily rows", flush=True)
+            print(f"{ticker}: fetched {len(history_by_ticker[ticker])} pykrx daily rows", flush=True)
+            if args.sleep_seconds > 0:
+                time.sleep(float(args.sleep_seconds))
+    else:
+        app_key, app_secret = _credentials()
+        base_url = _kis_base_url()
+        with httpx.Client(timeout=max(1.0, float(args.timeout_seconds))) as client:
+            token = _issue_access_token(client, base_url=base_url, app_key=app_key, app_secret=app_secret)
+            for ticker in tickers:
+                history_by_ticker[ticker] = _fetch_ticker_history(
+                    client=client,
+                    base_url=base_url,
+                    app_key=app_key,
+                    app_secret=app_secret,
+                    token=token,
+                    ticker=ticker,
+                    market_code=args.market_code,
+                    start=start,
+                    end=end,
+                    chunk_days=max(1, int(args.chunk_days)),
+                    sleep_seconds=max(0.0, float(args.sleep_seconds)),
+                    allow_missing=bool(args.allow_missing),
+                )
+                print(f"{ticker}: fetched {len(history_by_ticker[ticker])} KIS daily rows", flush=True)
     enriched = enrich_fixture(
         fixture,
         history_by_ticker=history_by_ticker,
         strict=not args.allow_missing,
+        provider="pykrx.get_market_ohlcv_by_date"
+        if args.provider == "pykrx"
+        else "KIS inquire-daily-itemchartprice",
     )
     _write_json(Path(args.out), enriched)
     print(f"wrote enriched fixture: {args.out}", flush=True)

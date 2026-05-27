@@ -53,6 +53,9 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.7",
 ]
+backtest-data = [
+    "pykrx>=1.2.8",
+]
 
 [project.scripts]
 libra-agent-api = "libra_agent.main:main"
