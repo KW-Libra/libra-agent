@@ -4,6 +4,14 @@ param(
     [string]$Model = "claude-sonnet-4-6",
     [string]$GovernancePreset = "",
     [string]$PromptVariant = "",
+    [string]$ExecutionPolicyMode = "",
+    [string]$ExecutionParticipationRate = "",
+    [string]$ExecutionMaxAbsDeltaPct = "",
+    [string]$ExecutionResolveTickerConflicts = "",
+    [string]$IssueStateEnabled = "",
+    [string]$IssueStateCooldownObservations = "",
+    [string]$StartDate = "",
+    [string]$EndDate = "",
     [int]$Limit = 0,
     [string]$RunId = "",
     [switch]$Force
@@ -66,6 +74,24 @@ if ($PromptVariant) {
 } else {
     Remove-Item Env:LIBRA_PROMPT_VARIANT -ErrorAction SilentlyContinue
 }
+if ($ExecutionPolicyMode) {
+    $env:LIBRA_EXECUTION_POLICY_MODE = $ExecutionPolicyMode
+}
+if ($ExecutionParticipationRate) {
+    $env:LIBRA_EXECUTION_PARTICIPATION_RATE = $ExecutionParticipationRate
+}
+if ($ExecutionMaxAbsDeltaPct) {
+    $env:LIBRA_EXECUTION_MAX_ABS_DELTA_PCT = $ExecutionMaxAbsDeltaPct
+}
+if ($ExecutionResolveTickerConflicts) {
+    $env:LIBRA_EXECUTION_RESOLVE_TICKER_CONFLICTS = $ExecutionResolveTickerConflicts
+}
+if ($IssueStateEnabled) {
+    $env:LIBRA_ISSUE_STATE_ENABLED = $IssueStateEnabled
+}
+if ($IssueStateCooldownObservations) {
+    $env:LIBRA_ISSUE_STATE_COOLDOWN_OBSERVATIONS = $IssueStateCooldownObservations
+}
 
 $Fixture = Join-Path $OutDir "comparison-fixture.json"
 $BundlesDir = Join-Path $OutDir "ingest-bundles-article"
@@ -95,8 +121,13 @@ if ($Force) {
     }
 }
 
-$sourceFixtureRows = (Get-Content $Fixture -Raw | ConvertFrom-Json).prices.Count
-$expectedRows = if ($Limit -gt 0) { [Math]::Min($Limit, $sourceFixtureRows) } else { $sourceFixtureRows }
+$fixturePrices = (Get-Content $Fixture -Raw | ConvertFrom-Json).prices
+$sourceFixtureRows = $fixturePrices.Count
+$selectedFixtureRows = @($fixturePrices | Where-Object {
+    (-not $StartDate -or [string]$_.date -ge $StartDate) -and
+    (-not $EndDate -or [string]$_.date -le $EndDate)
+}).Count
+$expectedRows = if ($Limit -gt 0) { [Math]::Min($Limit, $selectedFixtureRows) } else { $selectedFixtureRows }
 $args = @(
     (Join-Path $RepoRoot "scripts\replay_full_committee_backtest.py"),
     "--fixture", $Fixture,
@@ -113,6 +144,12 @@ $args = @(
 )
 if ($Limit -gt 0) {
     $args += @("--limit", [string]$Limit)
+}
+if ($StartDate) {
+    $args += @("--start-date", $StartDate)
+}
+if ($EndDate) {
+    $args += @("--end-date", $EndDate)
 }
 
 $process = Start-Process `
@@ -143,6 +180,8 @@ $pidPayload = [ordered]@{
     source_fixture_rows = $sourceFixtureRows
     expected_rows = $expectedRows
     requested_limit = $Limit
+    start_date = if ($StartDate) { $StartDate } else { $null }
+    end_date = if ($EndDate) { $EndDate } else { $null }
     backend = "anthropic"
     model = $Model
     governance_preset = if ($GovernancePreset) { $GovernancePreset } else { "default" }
@@ -153,6 +192,12 @@ $pidPayload = [ordered]@{
     sentiment_phase2_enabled = $env:LIBRA_SENTIMENT_PHASE2_ENABLED
     committee_round1_max_workers = $env:LIBRA_COMMITTEE_ROUND1_MAX_WORKERS
     committee_round2_max_workers = $env:LIBRA_COMMITTEE_ROUND2_MAX_WORKERS
+    execution_policy_mode = $env:LIBRA_EXECUTION_POLICY_MODE
+    execution_participation_rate = $env:LIBRA_EXECUTION_PARTICIPATION_RATE
+    execution_max_abs_delta_pct = $env:LIBRA_EXECUTION_MAX_ABS_DELTA_PCT
+    execution_resolve_ticker_conflicts = $env:LIBRA_EXECUTION_RESOLVE_TICKER_CONFLICTS
+    issue_state_enabled = $env:LIBRA_ISSUE_STATE_ENABLED
+    issue_state_cooldown_observations = $env:LIBRA_ISSUE_STATE_COOLDOWN_OBSERVATIONS
 }
 $pidPayload | ConvertTo-Json -Depth 4 | Set-Content -Path $PidJson -Encoding UTF8
 $pidPayload | ConvertTo-Json -Depth 4
