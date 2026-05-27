@@ -14,7 +14,11 @@ from typing import Any
 
 from libra_agent.ingest_bundle import knowledge_payload_from_ingest_bundle
 from libra_agent.libra.config import add_backend_arguments
-from libra_agent.libra.direct_indexing import PortfolioDefinition
+from libra_agent.libra.direct_indexing import (
+    PortfolioDefinition,
+    candidate_plan_from_drift,
+    compute_drift,
+)
 from libra_agent.libra.llm_clients import open_chat_client_from_args
 from libra_agent.libra.schemas import IPSConfig, KYCProfile, MarketSnapshot
 from libra_agent.libra_models import PortfolioSnapshot
@@ -284,6 +288,136 @@ def _load_bundle(bundles_dir: Path, row: dict[str, Any]) -> tuple[Path, dict[str
     return path, _read_json(path)
 
 
+def _decision_schedule(bundle_rows: list[dict[str, Any]], args: argparse.Namespace) -> set[str]:
+    frequency = str(args.decision_frequency or "daily").strip().lower()
+    if frequency == "daily":
+        return {str(row.get("prices_until")) for row in bundle_rows}
+    if frequency == "every-n-trading-days":
+        interval = int(args.decision_interval)
+        if interval < 1:
+            raise RuntimeError("--decision-interval must be >= 1")
+        return {
+            str(row.get("prices_until"))
+            for index, row in enumerate(bundle_rows)
+            if index % interval == 0
+        }
+    if frequency == "weekly":
+        selected: set[str] = set()
+        seen_weeks: set[tuple[int, int]] = set()
+        for row in bundle_rows:
+            day = str(row.get("prices_until"))
+            iso = datetime.fromisoformat(day).date().isocalendar()
+            key = (iso.year, iso.week)
+            if key in seen_weeks:
+                continue
+            seen_weeks.add(key)
+            selected.add(day)
+        return selected
+    raise RuntimeError(f"Unsupported decision frequency: {args.decision_frequency}")
+
+
+def _scheduled_skip_result(
+    *,
+    day: str,
+    bundle: dict[str, Any],
+    portfolio: PortfolioSnapshot,
+    portfolio_definition: PortfolioDefinition,
+    drift_report: dict[str, Any],
+    candidate_plan: dict[str, float],
+    schedule_reason: str,
+) -> dict[str, Any]:
+    summary = f"SCHEDULED_SKIP: {schedule_reason}; no LLM committee run for {day}."
+    return {
+        "model": "scheduled-skip/no-llm",
+        "query": DEFAULT_QUERY,
+        "portfolio": portfolio.to_dict(),
+        "agent_responses": [],
+        "decision": {
+            "decision": "DEFER",
+            "summary": summary,
+            "confidence": 1.0,
+            "urgency": "defer",
+            "called_agents": [],
+            "skipped_agents": [*CORE_AGENT_IDS, *DOMAIN_AGENT_IDS],
+            "skip_rationale": {
+                "schedule": "This trading day is outside the configured backtest decision cadence."
+            },
+            "candidate_rebalance_plan": {},
+            "decision_trace": [],
+            "reasoning": summary,
+            "user_notification": {
+                "level": "silent",
+                "body": summary,
+                "action_required": False,
+                "kind": "scheduled_backtest_skip",
+                "estimated_followup": None,
+                "sent_at": f"{day}T15:30:00+09:00",
+            },
+            "follow_up_at": None,
+            "feedback_checkpoint": None,
+            "consensus_score": 0.0,
+            "divergence_score": 0.0,
+            "needs_trade_evaluation": bool(candidate_plan),
+            "trigger": "schedule_skip",
+            "trigger_event": None,
+            "deadline_at": None,
+            "elapsed_seconds": 0.0,
+            "options": [],
+            "auto_safeguards": {
+                "scheduled_skip": True,
+                "schedule_reason": schedule_reason,
+                "direct_indexing_candidate_plan": dict(candidate_plan),
+            },
+            "notification_log": [],
+        },
+        "knowledge_sources": {
+            "ingest_bundle": str(bundle.get("bundle_id") or bundle.get("as_of") or day)
+        },
+        "governance_v1": {
+            "round1_opinions": [],
+            "round2_opinions": [],
+            "consensus_per_subject": {},
+            "targets_to_recall": [],
+            "mediator_decision": {
+                "consensus_per_subject": {},
+                "targets_to_recall": [],
+                "skip_round_2": True,
+                "rationale": "Scheduled skip; mediator not called.",
+            },
+            "compliance_before": {"can_proceed": True, "violations": [], "state": "BEFORE"},
+            "compliance_after": {"can_proceed": True, "violations": [], "state": "AFTER"},
+            "round1_responses": [],
+            "round2_responses": [],
+            "tentative_trades": [],
+            "execution_plan": None,
+            "final_decision": {
+                "decision": "DEFER",
+                "branch": "NO_EXECUTABLE_TRADE",
+                "trades": [],
+                "compliance_check": {"can_proceed": True, "violations": [], "state": "AFTER"},
+                "reasoning": summary,
+                "user_question": None,
+                "user_options": None,
+            },
+        },
+        "direct_indexing": {
+            "portfolio_definition": portfolio_definition.to_dict(),
+            "drift_report": drift_report,
+            "candidate_rebalance_plan": dict(candidate_plan),
+        },
+        "runtime": {
+            "engine": "scheduled_skip",
+            "round1_agent_count": 0,
+            "round2_agent_count": 0,
+        },
+        "backtest_schedule": {
+            "decision_executed": False,
+            "reason": schedule_reason,
+            "scheduled_skip": True,
+        },
+    }
+
+
 def _decision_row(*, day: str, bundle: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     decision = result.get("decision") if isinstance(result.get("decision"), dict) else {}
     governance = result.get("governance_v1") if isinstance(result.get("governance_v1"), dict) else {}
@@ -311,6 +445,7 @@ def _decision_row(*, day: str, bundle: dict[str, Any], result: dict[str, Any]) -
         "observed_count": bundle.get("observed_count"),
         "portfolio_relevant_count": bundle.get("portfolio_relevant_count"),
         "document_count": bundle.get("document_count"),
+        "scheduled_skip": runtime.get("engine") == "scheduled_skip",
     }
 
 
@@ -371,8 +506,8 @@ def _resolve_raw_bundle_path(value: Any, *, raw_dir: Path, bundles_dir: Path) ->
 def _resume_from_raw(
     *,
     raw_path: Path,
-    fixture: dict[str, Any],
     bundles_dir: Path,
+    expected_dates: list[str],
     price_by_date: dict[str, dict[str, Any]],
     base_weights: dict[str, float],
     initial_shares: dict[str, float],
@@ -382,10 +517,9 @@ def _resume_from_raw(
     if not raw_rows:
         return [], dict(initial_shares), None
 
-    fixture_dates = [str(row.get("date")) for row in fixture.get("prices", []) if isinstance(row, dict)]
     raw_dates = [str(row.get("date")) for row in raw_rows]
-    if raw_dates != fixture_dates[: len(raw_dates)]:
-        raise RuntimeError("Resume raw dates do not match the fixture date prefix.")
+    if raw_dates != expected_dates[: len(raw_dates)]:
+        raise RuntimeError("Resume raw dates do not match the selected replay date prefix.")
 
     shares = dict(initial_shares)
     decisions: list[dict[str, Any]] = []
@@ -470,11 +604,19 @@ def replay(args: argparse.Namespace) -> dict[str, Any]:
         bundle_rows = [row for row in bundle_rows if str(row.get("prices_until")) <= args.end_date]
     if args.limit:
         bundle_rows = bundle_rows[: int(args.limit)]
+    if not bundle_rows:
+        raise RuntimeError("No replay rows selected. Check --start-date, --end-date, and --limit.")
+
+    selected_dates = [str(row.get("prices_until")) for row in bundle_rows]
+    first_price_row = price_by_date.get(selected_dates[0])
+    if first_price_row is None:
+        raise RuntimeError(f"Selected first replay date is missing from fixture prices: {selected_dates[0]}")
 
     base_weights = _target_weights(fixture)
-    shares = _initial_shares(fixture, prices[0])
+    shares = _initial_shares(fixture, first_price_row)
     cost_rate = float(fixture.get("transaction_cost_bp", 0.0)) / 10_000.0
     portfolio_definition = _portfolio_definition(fixture)
+    decision_dates = _decision_schedule(bundle_rows, args)
     user_preferences = tuple(args.user_preference or DEFAULT_USER_PREFERENCES)
     ips = _ips_from_args(args)
     kyc = _kyc_from_args(args)
@@ -485,8 +627,8 @@ def replay(args: argparse.Namespace) -> dict[str, Any]:
     if resume_raw_path:
         resumed_decisions, shares, last_resume_date = _resume_from_raw(
             raw_path=resume_raw_path,
-            fixture=fixture,
             bundles_dir=bundles_dir,
+            expected_dates=selected_dates,
             price_by_date=price_by_date,
             base_weights=base_weights,
             initial_shares=shares,
@@ -526,6 +668,30 @@ def replay(args: argparse.Namespace) -> dict[str, Any]:
                         user_preferences=user_preferences,
                     )
                 )
+                drift = compute_drift(portfolio_definition, portfolio)
+                candidate_plan = candidate_plan_from_drift(drift)
+                if day not in decision_dates:
+                    result = _scheduled_skip_result(
+                        day=day,
+                        bundle=bundle,
+                        portfolio=portfolio,
+                        portfolio_definition=portfolio_definition,
+                        drift_report=drift.to_dict(),
+                        candidate_plan=candidate_plan,
+                        schedule_reason=(
+                            f"decision_frequency={args.decision_frequency}; "
+                            f"decision_interval={args.decision_interval}"
+                        ),
+                    )
+                    result = _sanitize_replay_metadata(result, day)
+                    row = _decision_row(day=day, bundle=bundle, result=result)
+                    decisions.append(row)
+                    if raw_path:
+                        _append_jsonl(raw_path, {"date": day, "bundle": str(bundle_path), "result": result})
+                    if args.progress_every and index % int(args.progress_every) == 0:
+                        print(f"replayed {index}/{total_replay_count} through {day}", flush=True)
+                    continue
+
                 knowledge_base = LocalKnowledgeBase.from_state_payload(
                     knowledge_payload_from_ingest_bundle(bundle, source_path=str(bundle_path))
                 )
@@ -553,6 +719,11 @@ def replay(args: argparse.Namespace) -> dict[str, Any]:
                     continue
 
                 result = _sanitize_replay_metadata(result, day)
+                result["backtest_schedule"] = {
+                    "decision_executed": True,
+                    "decision_frequency": args.decision_frequency,
+                    "decision_interval": args.decision_interval,
+                }
                 row = _decision_row(day=day, bundle=bundle, result=result)
                 decisions.append(row)
                 if raw_path:
@@ -578,6 +749,8 @@ def replay(args: argparse.Namespace) -> dict[str, Any]:
     _write_json(Path(args.out), decisions)
     breakdown = Counter(str(row.get("decision")) for row in decisions)
     round1_agent_union = sorted({agent for row in decisions for agent in row.get("round1_agents", [])})
+    scheduled_skip_count = sum(1 for row in decisions if row.get("scheduled_skip"))
+    llm_decision_count = len(decisions) - scheduled_skip_count
     summary = {
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "source_repo": str(Path(__file__).resolve().parents[1]),
@@ -598,7 +771,15 @@ def replay(args: argparse.Namespace) -> dict[str, Any]:
         "committee_llm_repair_attempts": os.environ.get("LIBRA_COMMITTEE_LLM_REPAIR_ATTEMPTS"),
         "drop_invalid_mediator_targets": os.environ.get("LIBRA_DROP_INVALID_MEDIATOR_TARGETS"),
         "committee_opinion_reasoning_chars": os.environ.get("LIBRA_COMMITTEE_OPINION_REASONING_CHARS"),
+        "start_date": args.start_date,
+        "end_date": args.end_date,
+        "decision_frequency": args.decision_frequency,
+        "decision_interval": args.decision_interval,
         "decision_count": len(decisions),
+        "llm_decision_count": llm_decision_count,
+        "scheduled_skip_count": scheduled_skip_count,
+        "selected_first_date": selected_dates[0],
+        "selected_last_date": selected_dates[-1],
         "errors": errors,
         "decision_breakdown": dict(sorted(breakdown.items())),
         "rebalance_count": sum(1 for row in decisions if row.get("decision") == "REBALANCE"),
@@ -634,6 +815,18 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--thread-prefix", default="service-committee-backtest")
     parser.add_argument("--start-date")
     parser.add_argument("--end-date")
+    parser.add_argument(
+        "--decision-frequency",
+        default="daily",
+        choices=("daily", "every-n-trading-days", "weekly"),
+        help="How often to run the LLM committee inside the selected date range.",
+    )
+    parser.add_argument(
+        "--decision-interval",
+        type=int,
+        default=1,
+        help="Trading-day interval used when --decision-frequency every-n-trading-days is selected.",
+    )
     parser.add_argument("--limit", type=int)
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--sleep-seconds", type=float, default=0.0)

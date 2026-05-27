@@ -279,6 +279,7 @@ def _extract_decision(raw_row: dict[str, Any]) -> dict[str, Any]:
         result.get("direct_indexing") if isinstance(result.get("direct_indexing"), dict) else {}
     )
     runtime = result.get("runtime") if isinstance(result.get("runtime"), dict) else {}
+    schedule = result.get("backtest_schedule") if isinstance(result.get("backtest_schedule"), dict) else {}
     round1 = governance.get("round1_responses") if isinstance(governance.get("round1_responses"), list) else []
     round2 = governance.get("round2_responses") if isinstance(governance.get("round2_responses"), list) else []
     notification = decision.get("user_notification") if isinstance(decision.get("user_notification"), dict) else {}
@@ -320,6 +321,7 @@ def _extract_decision(raw_row: dict[str, Any]) -> dict[str, Any]:
         "round1_agent_count": runtime.get("round1_agent_count"),
         "round2_agent_count": runtime.get("round2_agent_count"),
         "trace_complete": _trace_complete(result),
+        "scheduled_skip": bool(runtime.get("engine") == "scheduled_skip" or schedule.get("decision_executed") is False),
     }
 
 
@@ -328,24 +330,68 @@ def build_replay_fixture(
     raw_rows: list[dict[str, Any]],
     *,
     require_full: bool,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> dict[str, Any]:
     prices = _price_rows(source_fixture)
     fixture_dates = [str(row["date"]) for row in prices]
     raw_dates = [str(row.get("date")) for row in raw_rows]
-    if raw_dates != fixture_dates[: len(raw_dates)]:
-        raise ValueError("Replay raw dates do not match the source fixture date prefix.")
-    if require_full and len(raw_rows) != len(prices):
-        raise ValueError(f"Replay is incomplete: {len(raw_rows)} raw rows != {len(prices)} fixture rows.")
+    if not raw_dates:
+        raise ValueError("Replay raw is empty.")
+
+    if start_date or end_date:
+        selected_indices = [
+            index
+            for index, day in enumerate(fixture_dates)
+            if (not start_date or day >= start_date) and (not end_date or day <= end_date)
+        ]
+        if not selected_indices:
+            raise ValueError("No fixture prices match the requested evaluation date range.")
+        expected_dates = [fixture_dates[index] for index in selected_indices]
+        if require_full:
+            if raw_dates != expected_dates:
+                raise ValueError(
+                    "Replay raw dates do not exactly match the requested evaluation date range."
+                )
+            start_index = selected_indices[0]
+            end_index = selected_indices[-1] + 1
+        else:
+            if raw_dates != expected_dates[: len(raw_dates)]:
+                raise ValueError(
+                    "Replay raw dates do not match the requested evaluation date range prefix."
+                )
+            start_index = selected_indices[0]
+            end_index = start_index + len(raw_dates)
+    else:
+        try:
+            start_index = fixture_dates.index(raw_dates[0])
+        except ValueError as exc:
+            raise ValueError(f"Replay first date is not present in source fixture: {raw_dates[0]}") from exc
+        end_index = start_index + len(raw_dates)
+        expected_dates = fixture_dates[start_index:end_index]
+        if raw_dates != expected_dates:
+            raise ValueError("Replay raw dates do not form a contiguous source fixture segment.")
+        if require_full and raw_dates != fixture_dates:
+            raise ValueError(
+                f"Replay is incomplete for full source fixture: {len(raw_rows)} raw rows != {len(prices)} fixture rows."
+            )
+
     decisions = [_extract_decision(row) for row in raw_rows]
     replay_fixture = deepcopy(source_fixture)
-    replay_fixture["prices"] = prices[: len(raw_rows)]
+    replay_fixture["prices"] = prices[start_index:end_index]
     replay_fixture["libra_decisions"] = decisions
     replay_fixture["replay_validation"] = {
         "raw_rows": len(raw_rows),
         "source_fixture_rows": len(prices),
-        "full_match": len(raw_rows) == len(prices),
+        "source_start_index": start_index,
+        "source_end_index_exclusive": end_index,
+        "full_match": raw_dates == fixture_dates,
+        "source_full_match": raw_dates == fixture_dates,
+        "selected_range_full_match": raw_dates == fixture_dates[start_index:end_index],
         "first_date": raw_dates[0] if raw_dates else None,
         "last_date": raw_dates[-1] if raw_dates else None,
+        "requested_start_date": start_date,
+        "requested_end_date": end_date,
         "validated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
     return replay_fixture
@@ -487,18 +533,19 @@ def _mechanical_trade_dates(fixture: dict[str, Any]) -> set[str]:
 
 def _decision_counts(fixture: dict[str, Any]) -> tuple[int, int, int, int]:
     decisions = fixture.get("libra_decisions", [])
-    trace_complete_count = sum(1 for decision in decisions if decision.get("trace_complete"))
+    executed_decisions = [decision for decision in decisions if not decision.get("scheduled_skip")]
+    trace_complete_count = sum(1 for decision in executed_decisions if decision.get("trace_complete"))
     user_handoff_count = sum(
         1
-        for decision in decisions
+        for decision in executed_decisions
         if decision.get("user_handoff") or decision.get("decision") == "USER_DECISION_REQUIRED"
     )
     rebalance_count = sum(
         1
-        for decision in decisions
+        for decision in executed_decisions
         if decision.get("decision") == "REBALANCE" and decision.get("candidate_rebalance_plan")
     )
-    return len(decisions), trace_complete_count, user_handoff_count, rebalance_count
+    return len(executed_decisions), trace_complete_count, user_handoff_count, rebalance_count
 
 
 def _target_from_candidate_plan(
@@ -576,6 +623,8 @@ def simulate_libra_immediate(fixture: dict[str, Any]) -> dict[str, Any]:
     mechanical_dates = _mechanical_trade_dates(fixture)
     avoided_trade_count = 0
     for decision in fixture.get("libra_decisions", []):
+        if decision.get("scheduled_skip"):
+            continue
         if decision.get("decision") in {"HOLD", "DEFER"} and str(decision.get("date")) in mechanical_dates:
             avoided_trade_count += 1
 
@@ -1315,7 +1364,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-csv", required=True)
     parser.add_argument("--out-md", required=True)
     parser.add_argument("--out-fixture", help="Optional fixture JSON with extracted libra_decisions.")
-    parser.add_argument("--require-full", action="store_true", help="Require raw rows to cover the full source fixture.")
+    parser.add_argument(
+        "--require-full",
+        action="store_true",
+        help="Require raw rows to cover the full source fixture, or the full --start-date/--end-date range when provided.",
+    )
+    parser.add_argument("--start-date", help="Optional evaluation range start date, inclusive.")
+    parser.add_argument("--end-date", help="Optional evaluation range end date, inclusive.")
     parser.add_argument("--main-delay-days", type=int, default=2)
     parser.add_argument("--sensitivity-delay-days", type=int, nargs="*", default=[1, 3])
     parser.add_argument("--threshold", type=float, default=0.05)
@@ -1341,7 +1396,13 @@ def main() -> None:
     source_fixture_path = Path(args.fixture)
     source_fixture = _read_json(source_fixture_path)
     raw_rows = _read_jsonl(raw_path)
-    replay_fixture = build_replay_fixture(source_fixture, raw_rows, require_full=bool(args.require_full))
+    replay_fixture = build_replay_fixture(
+        source_fixture,
+        raw_rows,
+        require_full=bool(args.require_full),
+        start_date=args.start_date,
+        end_date=args.end_date,
+    )
     if args.out_fixture:
         _write_json(Path(args.out_fixture), replay_fixture)
     payload = build_results(

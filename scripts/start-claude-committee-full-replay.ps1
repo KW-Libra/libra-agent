@@ -12,6 +12,9 @@ param(
     [string]$IssueStateCooldownObservations = "",
     [string]$StartDate = "",
     [string]$EndDate = "",
+    [ValidateSet("daily", "every-n-trading-days", "weekly")]
+    [string]$DecisionFrequency = "daily",
+    [int]$DecisionInterval = 1,
     [int]$Limit = 0,
     [string]$RunId = "",
     [switch]$Force
@@ -46,7 +49,15 @@ if (-not $env:ANTHROPIC_API_KEY) {
 if (-not $RunId) {
     $modelSlug = $Model.ToLowerInvariant() -replace "[^a-z0-9]+", "-"
     $presetSlug = if ($GovernancePreset) { $GovernancePreset.ToLowerInvariant() -replace "[^a-z0-9]+", "-" } else { "default" }
+    $cadenceSlug = switch ($DecisionFrequency) {
+        "daily" { "daily" }
+        "weekly" { "weekly" }
+        "every-n-trading-days" { "every-$DecisionInterval-trading-days" }
+    }
     $suffix = if ($Limit -gt 0) { "smoke-$Limit" } else { "full-official" }
+    if ($cadenceSlug -ne "daily") {
+        $suffix = "$cadenceSlug-$suffix"
+    }
     $RunId = "article-$modelSlug-$presetSlug-service-v1-committee-$suffix"
 }
 
@@ -123,11 +134,15 @@ if ($Force) {
 
 $fixturePrices = (Get-Content $Fixture -Raw | ConvertFrom-Json).prices
 $sourceFixtureRows = $fixturePrices.Count
-$selectedFixtureRows = @($fixturePrices | Where-Object {
+$selectedFixturePrices = @($fixturePrices | Where-Object {
     (-not $StartDate -or [string]$_.date -ge $StartDate) -and
     (-not $EndDate -or [string]$_.date -le $EndDate)
-}).Count
+})
+$selectedFixtureRows = $selectedFixturePrices.Count
 $expectedRows = if ($Limit -gt 0) { [Math]::Min($Limit, $selectedFixtureRows) } else { $selectedFixtureRows }
+if ($DecisionInterval -lt 1) {
+    throw "DecisionInterval must be >= 1."
+}
 $args = @(
     (Join-Path $RepoRoot "scripts\replay_full_committee_backtest.py"),
     "--fixture", $Fixture,
@@ -140,6 +155,8 @@ $args = @(
     "--backend", "anthropic",
     "--anthropic-model", $Model,
     "--fail-on-fallback-events",
+    "--decision-frequency", $DecisionFrequency,
+    "--decision-interval", [string]$DecisionInterval,
     "--progress-every", "10"
 )
 if ($Limit -gt 0) {
@@ -182,6 +199,8 @@ $pidPayload = [ordered]@{
     requested_limit = $Limit
     start_date = if ($StartDate) { $StartDate } else { $null }
     end_date = if ($EndDate) { $EndDate } else { $null }
+    decision_frequency = $DecisionFrequency
+    decision_interval = $DecisionInterval
     backend = "anthropic"
     model = $Model
     governance_preset = if ($GovernancePreset) { $GovernancePreset } else { "default" }
