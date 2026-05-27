@@ -1,5 +1,6 @@
 param(
     [string]$OutDir = "D:\Libra\outputs\backtests\kr-objective-2020-2023-opendart-googlenews",
+    [string]$FixtureFile = "comparison-fixture.pykrx-volume.strict.json",
     [string]$EnvFile = "D:\libra-agent\.env.live.local",
     [string]$Model = "claude-sonnet-4-6",
     [string]$GovernancePreset = "",
@@ -104,7 +105,7 @@ if ($IssueStateCooldownObservations) {
     $env:LIBRA_ISSUE_STATE_COOLDOWN_OBSERVATIONS = $IssueStateCooldownObservations
 }
 
-$Fixture = Join-Path $OutDir "comparison-fixture.json"
+$Fixture = if ([System.IO.Path]::IsPathRooted($FixtureFile)) { $FixtureFile } else { Join-Path $OutDir $FixtureFile }
 $BundlesDir = Join-Path $OutDir "ingest-bundles-article"
 $RawOut = Join-Path $OutDir "libra-replay-results.$RunId.jsonl"
 $DecisionsOut = Join-Path $OutDir "libra-decisions.$RunId.json"
