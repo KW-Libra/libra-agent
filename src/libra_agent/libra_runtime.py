@@ -137,6 +137,28 @@ PUSH_RISK_KEYWORDS = (
     "fire",
 )
 
+REPORT_LIKE_KEYWORDS = (
+    "리포트",
+    "증권사",
+    "애널리스트",
+    "컨센서스",
+    "목표가",
+    "목표주가",
+    "투자의견",
+    "매수",
+    "비중확대",
+    "상향",
+    "하향",
+    "커버리지",
+    "실적 전망",
+    "report",
+    "analyst",
+    "consensus",
+    "target price",
+    "rating",
+    "coverage",
+)
+
 EVENT_TYPE_BIAS = {
     "EARNINGS": 0.35,
     "CAPEX": 0.15,
@@ -196,6 +218,11 @@ def truncate(value: str, limit: int = 700) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 3].rstrip() + "..."
+
+
+def looks_report_like_text(*parts: str) -> bool:
+    text = "\n".join(part for part in parts if part).casefold()
+    return any(token.casefold() in text for token in REPORT_LIKE_KEYWORDS)
 
 
 def event_direction_score(event: KnowledgeEvent) -> float:
@@ -787,11 +814,11 @@ class LocalKnowledgeBase:
             )
             if agent_id == "disclosure" and event.event_type not in {"DISCLOSURE", "EARNINGS"}:
                 continue
-            if agent_id == "report" and event.event_type not in {
-                "RESEARCH",
-                "EARNINGS",
-                "DISCLOSURE",
-            }:
+            if (
+                agent_id == "report"
+                and event.event_type not in {"RESEARCH", "EARNINGS", "DISCLOSURE"}
+                and not looks_report_like_text(event.headline, event.summary)
+            ):
                 continue
             if agent_id == "news" and event.event_type == "RESEARCH":
                 continue
@@ -852,7 +879,9 @@ class LocalKnowledgeBase:
             for token in ("거시", "매크로", "macro", "환율", "금리", "지수")
         )
         for document in sorted(self.documents, key=lambda item: item.published_at, reverse=True):
-            if doc_type_filter and document.doc_type not in doc_type_filter:
+            document_doc_type = document.doc_type.upper()
+            report_like = agent_id == "report" and self._is_report_like_document(document)
+            if doc_type_filter and document_doc_type not in doc_type_filter and not report_like:
                 continue
             matched = self._match_tickers(
                 headline=document.title,
@@ -863,12 +892,14 @@ class LocalKnowledgeBase:
             if (
                 matched
                 or market_wide
-                or (agent_id == "news" and wants_macro and document.doc_type == "NEWS")
+                or (agent_id == "news" and wants_macro and document_doc_type == "NEWS")
             ):
+                doc_type = "REPORT" if report_like else document.doc_type
+                event_type = "RESEARCH" if report_like and not document.event_type else document.event_type
                 results.append(
                     KnowledgeDocument(
                         doc_id=document.doc_id,
-                        doc_type=document.doc_type,
+                        doc_type=doc_type,
                         title=document.title,
                         body=document.body,
                         publisher=document.publisher,
@@ -877,7 +908,7 @@ class LocalKnowledgeBase:
                         region=document.region,
                         published_at=document.published_at,
                         relevance_score=document.relevance_score,
-                        event_type=document.event_type,
+                        event_type=event_type,
                         event_type_score=document.event_type_score,
                         entities=document.entities,
                         matched_holdings=tuple(sorted(matched)),
@@ -885,6 +916,19 @@ class LocalKnowledgeBase:
                     )
                 )
         return results
+
+    def _is_report_like_document(self, document: KnowledgeDocument) -> bool:
+        doc_type = document.doc_type.upper()
+        if doc_type == "REPORT":
+            return True
+        if doc_type != "NEWS":
+            return False
+        return looks_report_like_text(
+            document.title,
+            document.body[:1200],
+            document.publisher,
+            document.source_name,
+        )
 
     def _alias_map(self, portfolio: PortfolioSnapshot) -> dict[str, set[str]]:
         alias_map: dict[str, set[str]] = {}

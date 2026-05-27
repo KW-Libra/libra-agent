@@ -118,6 +118,38 @@ def _parse_user_preferences(items: Iterable[str]) -> dict[str, Any]:
     return preferences
 
 
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _avg_daily_volume(rows: list[dict[str, Any]], *, lookback: int = 20) -> float | None:
+    volumes = [
+        _as_float(row.get("volume"))
+        for row in rows[-lookback:]
+        if _as_float(row.get("volume")) > 0
+    ]
+    if not volumes:
+        return None
+    return sum(volumes) / len(volumes)
+
+
+def _avg_daily_turnover_krw(rows: list[dict[str, Any]], *, lookback: int = 20) -> float | None:
+    turnovers = []
+    for row in rows[-lookback:]:
+        close = _as_float(row.get("close"))
+        volume = _as_float(row.get("volume"))
+        if close > 0 and volume > 0:
+            turnovers.append(close * volume)
+    if not turnovers:
+        return None
+    return sum(turnovers) / len(turnovers)
+
+
 def portfolio_snapshot_to_domain_context(
     portfolio: PortfolioSnapshot,
     *,
@@ -137,6 +169,10 @@ def portfolio_snapshot_to_domain_context(
         daily_returns = [float(item) for item in getattr(h, "daily_returns", ())]
         if daily_returns:
             returns_data[h.ticker] = daily_returns
+        avg_daily_volume = getattr(h, "avg_daily_volume", None) or _avg_daily_volume(ohlcv)
+        avg_daily_turnover_krw = getattr(
+            h, "avg_daily_turnover_krw", None
+        ) or _avg_daily_turnover_krw(ohlcv)
         jy_holdings.append(
             {
                 "symbol": h.ticker,
@@ -150,6 +186,11 @@ def portfolio_snapshot_to_domain_context(
                 "esg_score": h.esg_score,
                 "carbon_intensity": h.carbon_intensity,
                 "ohlcv": ohlcv,
+                "avg_daily_volume": avg_daily_volume,
+                "avg_daily_turnover_krw": avg_daily_turnover_krw,
+                "adv_krw": avg_daily_turnover_krw,
+                "bid_ask_spread_bps": getattr(h, "bid_ask_spread_bps", None),
+                "free_float_ratio_pct": getattr(h, "free_float_ratio_pct", None),
             }
         )
 

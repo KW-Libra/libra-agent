@@ -23,6 +23,7 @@ class BacktestReplayOptionTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.replay = _load_script_module("replay_full_committee_backtest_script", "scripts/replay_full_committee_backtest.py")
         cls.evaluate = _load_script_module("evaluate_replay_strategies_script", "scripts/evaluate_replay_strategies.py")
+        cls.enrich = _load_script_module("enrich_fixture_with_kis_ohlcv_script", "scripts/enrich_fixture_with_kis_ohlcv.py")
 
     def test_decision_schedule_every_n_trading_days(self) -> None:
         rows = [
@@ -56,9 +57,9 @@ class BacktestReplayOptionTests(unittest.TestCase):
 
     def test_portfolio_payload_includes_point_in_time_price_history(self) -> None:
         prices = [
-            {"date": "2021-01-04", "A": 100.0, "B": 50.0},
-            {"date": "2021-01-05", "A": 110.0, "B": 55.0},
-            {"date": "2021-01-06", "A": 121.0, "B": 60.5},
+            {"date": "2021-01-04", "A": 100.0, "B": 50.0, "volumes": {"A": 1_000, "B": 2_000}},
+            {"date": "2021-01-05", "A": 110.0, "B": 55.0, "volumes": {"A": 2_000, "B": 2_500}},
+            {"date": "2021-01-06", "A": 121.0, "B": 60.5, "volumes": {"A": 3_000, "B": 3_000}},
         ]
 
         payload = self.replay._portfolio_payload(
@@ -74,6 +75,33 @@ class BacktestReplayOptionTests(unittest.TestCase):
         self.assertEqual([row["date"] for row in holding["ohlcv"]], ["2021-01-04", "2021-01-05", "2021-01-06"])
         self.assertEqual([round(value, 4) for value in holding["daily_returns"]], [0.1, 0.1])
         self.assertEqual(holding["ohlcv"][-1]["close"], 121.0)
+        self.assertEqual([row["volume"] for row in holding["ohlcv"]], [1_000, 2_000, 3_000])
+        self.assertEqual(holding["avg_daily_volume"], 2_000)
+        self.assertEqual(holding["avg_daily_turnover_krw"], (100_000 + 220_000 + 363_000) / 3)
+
+    def test_enrich_fixture_attaches_kis_volumes(self) -> None:
+        fixture = {
+            "target_weights": {"A": 1.0},
+            "prices": [
+                {"date": "2021-01-04", "A": 100.0},
+                {"date": "2021-01-05", "A": 110.0},
+            ],
+        }
+
+        enriched = self.enrich.enrich_fixture(
+            fixture,
+            history_by_ticker={
+                "A": {
+                    "2021-01-04": {"volume": 1_000},
+                    "2021-01-05": {"volume": 2_000},
+                }
+            },
+            strict=True,
+        )
+
+        self.assertEqual(enriched["prices"][0]["volumes"]["A"], 1_000)
+        self.assertEqual(enriched["prices"][1]["volumes"]["A"], 2_000)
+        self.assertEqual(enriched["liquidity_history"]["rows_per_ticker"]["A"], 2)
 
     def test_evaluation_accepts_contiguous_mid_fixture_range(self) -> None:
         source_fixture = {

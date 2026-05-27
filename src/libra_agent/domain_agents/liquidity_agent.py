@@ -31,6 +31,8 @@ class LiquidityAgent(BaseAgent):
                 or holding.get("average_daily_turnover_krw")
                 or holding.get("adv_krw")
             )
+            if adv_krw <= 0:
+                adv_krw = _avg_daily_turnover_krw(holding.get("ohlcv"))
             spread_bps = _as_float(holding.get("bid_ask_spread_bps"))
             free_float_pct = _as_float(holding.get("free_float_ratio_pct"))
             market_value = _as_float(holding.get("market_value"))
@@ -114,3 +116,19 @@ def _as_float(value: Any) -> float:
         return float(str(value).replace(",", "").strip())
     except (TypeError, ValueError):
         return 0.0
+
+
+def _avg_daily_turnover_krw(rows: Any, *, lookback: int = 20) -> float:
+    if not isinstance(rows, (list, tuple)):
+        return 0.0
+    turnovers: list[float] = []
+    for row in rows[-lookback:]:
+        if not isinstance(row, dict):
+            continue
+        close = _as_float(row.get("close"))
+        volume = _as_float(row.get("volume"))
+        if close > 0 and volume > 0:
+            turnovers.append(close * volume)
+    if not turnovers:
+        return 0.0
+    return sum(turnovers) / len(turnovers)

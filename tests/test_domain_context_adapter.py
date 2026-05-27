@@ -144,6 +144,41 @@ class DomainContextAdapterTests(unittest.TestCase):
         self.assertEqual(verdict.vote, "reject")
         self.assertIn("스프레드", verdict.rationale)
 
+    def test_adapter_derives_liquidity_adv_from_ohlcv(self) -> None:
+        history = tuple(
+            {
+                "date": f"2026-04-{(index % 28) + 1:02d}",
+                "close": 50_000,
+                "high": 50_000,
+                "low": 50_000,
+                "volume": 1_000_000,
+            }
+            for index in range(25)
+        )
+        snapshot = PortfolioSnapshot(
+            generated_at=datetime(2026, 5, 25, 0, 0, tzinfo=UTC),
+            total_value_krw=10_000_000,
+            holdings=(
+                PortfolioHolding(
+                    ticker="005930",
+                    company_name="삼성전자",
+                    weight=1.0,
+                    shares=200,
+                    last_price=50_000,
+                    market_value_krw=10_000_000,
+                    ohlcv=history,
+                ),
+            ),
+        )
+
+        ctx = portfolio_snapshot_to_domain_context(snapshot, user_id="test")
+        verdict = asyncio.run(LiquidityAgent().deliberate(ctx))
+
+        self.assertEqual(ctx.holdings[0]["avg_daily_turnover_krw"], 50_000_000_000)
+        self.assertEqual(ctx.holdings[0]["adv_krw"], 50_000_000_000)
+        self.assertEqual(verdict.vote, "approve")
+        self.assertNotIn("데이터가 없어", verdict.rationale)
+
     def test_technical_analysis_abstains_without_price_history(self) -> None:
         ctx = portfolio_snapshot_to_domain_context(self._snapshot(), user_id="test")
 

@@ -262,6 +262,10 @@ class PortfolioHolding:
     average_price: float | None = None
     market_value_krw: float | None = None
     unrealized_pnl_krw: float | None = None
+    avg_daily_volume: float | None = None
+    avg_daily_turnover_krw: float | None = None
+    bid_ask_spread_bps: float | None = None
+    free_float_ratio_pct: float | None = None
     ohlcv: tuple[dict[str, Any], ...] = ()
     daily_returns: tuple[float, ...] = ()
 
@@ -294,6 +298,27 @@ class PortfolioHolding:
             unrealized_pnl_krw=_as_float(payload.get("unrealized_pnl_krw"))
             if payload.get("unrealized_pnl_krw") is not None
             else None,
+            avg_daily_volume=_as_float(
+                payload.get("avg_daily_volume") or payload.get("adv_volume")
+            )
+            if payload.get("avg_daily_volume") is not None
+            or payload.get("adv_volume") is not None
+            else None,
+            avg_daily_turnover_krw=_as_float(
+                payload.get("avg_daily_turnover_krw")
+                or payload.get("average_daily_turnover_krw")
+                or payload.get("adv_krw")
+            )
+            if payload.get("avg_daily_turnover_krw") is not None
+            or payload.get("average_daily_turnover_krw") is not None
+            or payload.get("adv_krw") is not None
+            else None,
+            bid_ask_spread_bps=_as_float(payload.get("bid_ask_spread_bps"))
+            if payload.get("bid_ask_spread_bps") is not None
+            else None,
+            free_float_ratio_pct=_as_float(payload.get("free_float_ratio_pct"))
+            if payload.get("free_float_ratio_pct") is not None
+            else None,
             ohlcv=tuple(
                 dict(item)
                 for item in _as_list(payload.get("ohlcv"))
@@ -319,6 +344,10 @@ class PortfolioHolding:
             "average_price": self.average_price,
             "market_value_krw": self.market_value_krw,
             "unrealized_pnl_krw": self.unrealized_pnl_krw,
+            "avg_daily_volume": self.avg_daily_volume,
+            "avg_daily_turnover_krw": self.avg_daily_turnover_krw,
+            "bid_ask_spread_bps": self.bid_ask_spread_bps,
+            "free_float_ratio_pct": self.free_float_ratio_pct,
             "ohlcv": [dict(item) for item in self.ohlcv],
             "daily_returns": list(self.daily_returns),
         }

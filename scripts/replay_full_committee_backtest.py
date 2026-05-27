@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from collections.abc import Mapping
 from contextlib import ExitStack
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -135,7 +136,7 @@ def _target_weights(fixture: dict[str, Any]) -> dict[str, float]:
 def _initial_shares(fixture: dict[str, Any], first_price_row: dict[str, Any]) -> dict[str, float]:
     initial_value = float(fixture["initial_value_krw"])
     return {
-        ticker: (initial_value * weight) / float(first_price_row[ticker])
+        ticker: (initial_value * weight) / _close_for_row(first_price_row, ticker)
         for ticker, weight in _target_weights(fixture).items()
     }
 
@@ -153,6 +154,48 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _close_for_row(row: Mapping[str, Any], ticker: str) -> float:
+    raw = row.get(ticker)
+    if isinstance(raw, Mapping):
+        for key in ("close", "price", "last_price"):
+            close = _as_float(raw.get(key))
+            if close > 0:
+                return close
+    close = _as_float(raw)
+    if close > 0:
+        return close
+    raise RuntimeError(f"Missing close price for {ticker} on {row.get('date')}")
+
+
+def _volume_for_row(row: Mapping[str, Any], ticker: str) -> float:
+    raw = row.get(ticker)
+    if isinstance(raw, Mapping):
+        for key in ("volume", "vol", "acml_vol"):
+            volume = _as_float(raw.get(key))
+            if volume > 0:
+                return volume
+
+    for key in (f"{ticker}_volume", f"{ticker}_vol", f"{ticker}.volume", f"{ticker}.vol"):
+        volume = _as_float(row.get(key))
+        if volume > 0:
+            return volume
+
+    volumes = row.get("volumes")
+    if isinstance(volumes, Mapping):
+        volume = _as_float(volumes.get(ticker))
+        if volume > 0:
+            return volume
+
+    ohlcv = row.get("ohlcv")
+    if isinstance(ohlcv, Mapping):
+        ticker_row = ohlcv.get(ticker)
+        if isinstance(ticker_row, Mapping):
+            volume = _as_float(ticker_row.get("volume"))
+            if volume > 0:
+                return volume
+    return 0.0
+
+
 def _price_history_for(
     prices: list[dict[str, Any]],
     *,
@@ -163,7 +206,10 @@ def _price_history_for(
     start_index = max(0, end_index - lookback + 1)
     rows: list[dict[str, Any]] = []
     for row in prices[start_index : end_index + 1]:
-        close = _as_float(row.get(ticker))
+        try:
+            close = _close_for_row(row, ticker)
+        except RuntimeError:
+            continue
         if close <= 0:
             continue
         rows.append(
@@ -172,10 +218,33 @@ def _price_history_for(
                 "close": close,
                 "high": close,
                 "low": close,
-                "volume": 0.0,
+                "volume": _volume_for_row(row, ticker),
             }
         )
     return rows
+
+
+def _avg_daily_volume(history: list[dict[str, Any]], *, lookback: int = 20) -> float | None:
+    volumes = [
+        _as_float(row.get("volume"))
+        for row in history[-lookback:]
+        if _as_float(row.get("volume")) > 0
+    ]
+    if not volumes:
+        return None
+    return sum(volumes) / len(volumes)
+
+
+def _avg_daily_turnover_krw(history: list[dict[str, Any]], *, lookback: int = 20) -> float | None:
+    turnovers = []
+    for row in history[-lookback:]:
+        close = _as_float(row.get("close"))
+        volume = _as_float(row.get("volume"))
+        if close > 0 and volume > 0:
+            turnovers.append(close * volume)
+    if not turnovers:
+        return None
+    return sum(turnovers) / len(turnovers)
 
 
 def _daily_returns_from_history(history: list[dict[str, Any]]) -> list[float]:
@@ -200,12 +269,20 @@ def _portfolio_payload(
     shares: dict[str, float],
     user_preferences: tuple[str, ...],
 ) -> dict[str, Any]:
-    values = {ticker: float(shares[ticker]) * float(price_row[ticker]) for ticker in shares}
+    values = {ticker: float(shares[ticker]) * _close_for_row(price_row, ticker) for ticker in shares}
     total_value = sum(values.values())
     holdings = []
     for ticker, market_value in sorted(values.items()):
-        price = float(price_row[ticker])
+        price = _close_for_row(price_row, ticker)
         history = _price_history_for(prices, end_index=price_index, ticker=ticker)
+        avg_daily_volume = _avg_daily_volume(history)
+        avg_daily_turnover_krw = _avg_daily_turnover_krw(history)
+        liquidity_fields = {}
+        if avg_daily_volume is not None:
+            liquidity_fields["avg_daily_volume"] = avg_daily_volume
+        if avg_daily_turnover_krw is not None:
+            liquidity_fields["avg_daily_turnover_krw"] = avg_daily_turnover_krw
+            liquidity_fields["adv_krw"] = avg_daily_turnover_krw
         holdings.append(
             {
                 "ticker": ticker,
@@ -218,6 +295,7 @@ def _portfolio_payload(
                 "sector": "EQUITY",
                 "ohlcv": history,
                 "daily_returns": _daily_returns_from_history(history),
+                **liquidity_fields,
             }
         )
     return {
@@ -304,7 +382,9 @@ def _apply_rebalance(
 ) -> dict[str, float]:
     if not candidate_plan:
         return dict(shares)
-    current_values = {ticker: float(shares[ticker]) * float(price_row[ticker]) for ticker in shares}
+    current_values = {
+        ticker: float(shares[ticker]) * _close_for_row(price_row, ticker) for ticker in shares
+    }
     total_value = sum(current_values.values())
     current_weights = {
         ticker: (current_values.get(ticker, 0.0) / total_value if total_value > 0 else 0.0)
@@ -319,7 +399,7 @@ def _apply_rebalance(
     turnover = sum(abs(desired_values[ticker] - current_values.get(ticker, 0.0)) for ticker in target)
     investable_value = max(0.0, total_value - turnover * cost_rate)
     return {
-        ticker: (investable_value * target[ticker]) / float(price_row[ticker])
+        ticker: (investable_value * target[ticker]) / _close_for_row(price_row, ticker)
         for ticker in target
     }
 

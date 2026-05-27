@@ -1031,6 +1031,60 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
         self.assertEqual(len(slice_.documents), 1)
         self.assertEqual(slice_.documents[0].matched_holdings, ("005930",))
 
+    def test_report_agent_uses_report_like_news_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            documents_path = Path(tmp_dir) / "normalized_documents.json"
+            documents_path.write_text(
+                json.dumps(
+                    {
+                        "documents": [
+                            {
+                                "doc_id": "news_report_like",
+                                "doc_type": "NEWS",
+                                "source_info": {
+                                    "publisher": "뉴스",
+                                    "source_name": "Google News RSS",
+                                    "source_url": "https://example.test/news",
+                                    "region": "KR",
+                                },
+                                "normalized_content": {
+                                    "title": "삼성전자 목표가 상향 리포트",
+                                    "body": "증권사 애널리스트가 반도체 업황 회복과 컨센서스 상향 가능성을 제시했습니다.",
+                                },
+                                "timing_info": {
+                                    "published_at": "2026-05-15T00:00:00+09:00",
+                                },
+                                "entities": [
+                                    {
+                                        "entity_type": "STOCK",
+                                        "entity_id": "005930",
+                                        "entity_name": "삼성전자",
+                                        "ticker": "005930",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            knowledge_base = LocalKnowledgeBase.from_files(
+                normalized_documents_path=documents_path
+            )
+
+        slice_ = knowledge_base.slice_for_agent(
+            agent_id="report",
+            portfolio=_portfolio(),
+            query="삼성전자 증권사 리포트 확인",
+            depth="shallow",
+        )
+
+        self.assertEqual(len(slice_.documents), 1)
+        self.assertEqual(slice_.documents[0].doc_type, "REPORT")
+        self.assertEqual(slice_.documents[0].event_type, "RESEARCH")
+
     def test_empty_portfolio_uses_market_wide_knowledge_slice(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             events_path = Path(tmp_dir) / "events.json"
