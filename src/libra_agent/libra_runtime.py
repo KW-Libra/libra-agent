@@ -26,6 +26,7 @@ from .libra.direct_indexing import (
     compact_drift_context,
     compute_drift,
 )
+from .libra.execution_policy import IssueStateManager
 from .libra.llm_clients.base import ChatClientError, ChatClientProtocol
 from .libra.prompts import (
     JUDGE_ACTION_RULES,
@@ -935,6 +936,24 @@ def _agent_fallbacks_disabled() -> bool:
         "y",
         "on",
     }
+
+
+def _issue_state_enabled() -> bool:
+    return os.getenv("LIBRA_ISSUE_STATE_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+
+
+def _issue_state_cooldown_observations() -> int:
+    raw = os.getenv("LIBRA_ISSUE_STATE_COOLDOWN_OBSERVATIONS", "20")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 20
 
 
 class LLMAgent:
@@ -1896,6 +1915,9 @@ class JudgeOrchestrator:
         self.domain_agents = agent_bundle.domain_agents()
         self.domain_router = CoreChatDomainRouter(client)
         self.checkpoint_path = Path(checkpoint_path).expanduser() if checkpoint_path else None
+        self._issue_state_manager = IssueStateManager(
+            cooldown_observations=_issue_state_cooldown_observations()
+        )
         from .libra_graph import LibraLangGraphRuntime
 
         self._graph_runtime = LibraLangGraphRuntime(self)
@@ -1970,6 +1992,11 @@ class JudgeOrchestrator:
             compute_drift(portfolio_definition, portfolio) if portfolio_definition else None
         )
         candidate_plan = candidate_plan_from_drift(drift_report) if drift_report else {}
+        policy_weights = (
+            {item.ticker: item.weight for item in portfolio_definition.target_weights}
+            if portfolio_definition
+            else {}
+        )
         if not candidate_plan and trigger == "push":
             candidate_plan = self._candidate_plan_from_trigger(
                 portfolio=portfolio,
@@ -2024,6 +2051,7 @@ class JudgeOrchestrator:
             kyc=kyc,
             market_data=market_data,
             candidate_plan=candidate_plan,
+            policy_weights=policy_weights,
             mediator_client=self.client,
             final_judge_client=self.client,
         )
@@ -2343,12 +2371,45 @@ class JudgeOrchestrator:
                 "auto_safeguards": {
                     "governance_v1_branch": final.branch.value,
                     "compliance_after": governance.compliance_after.to_dict(),
+                    "execution_plan": getattr(governance, "execution_plan", None),
                 },
                 "notification_log": [
                     item.to_dict() for item in [*run_state.notification_log, notification]
                 ],
             }
         )
+        if _issue_state_enabled() and final.decision.value == "USER_DECISION_REQUIRED":
+            status, issue_state = self._issue_state_manager.observe(
+                branch=final.branch.value,
+                candidate_plan=candidate_plan,
+                seen_at=portfolio.generated_at.isoformat(),
+            )
+            decision.auto_safeguards["issue_state"] = issue_state.to_dict()
+            decision.auto_safeguards["issue_state_transition"] = status
+            if status == "SUPPRESSED_BY_COOLDOWN":
+                decision.decision = DecisionType.DEFER
+                decision.urgency = Urgency.DEFER
+                decision.summary = (
+                    "DEFER: 동일한 unresolved user issue가 cooldown 내 반복되어 "
+                    "새 handoff로 집계하지 않고 보류했습니다."
+                )
+                decision.reasoning = (
+                    f"동일 이슈({issue_state.issue_key})가 이미 사용자 판단 대기 상태입니다. "
+                    "중복 알림을 억제하고 기존 이슈 상태를 유지합니다."
+                )
+                decision.options = []
+                decision.user_notification = UserNotification(
+                    level=self._notification_level(DecisionType.DEFER, Urgency.DEFER),
+                    body=decision.reasoning,
+                    action_required=False,
+                    kind="governance_v1_issue_suppressed",
+                    estimated_followup=None,
+                    sent_at=self._notification_timestamp(),
+                )
+                if decision.notification_log:
+                    decision.notification_log[-1] = decision.user_notification
+                else:
+                    decision.notification_log.append(decision.user_notification)
         return decision
 
     def _initialize_run_state(

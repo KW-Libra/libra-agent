@@ -19,6 +19,7 @@ from libra_agent.runtime.debate_events import (
 )
 
 from .compliance import build_compliance_context_from_portfolio, default_compliance_engine
+from .execution_policy import build_execution_plan
 from .governance_config import load_governance_config
 from .judge.final import (
     can_auto_resolve_conflict,
@@ -95,6 +96,7 @@ class CommitteeRunResult:
     round1_responses: list[AgentResponse] = field(default_factory=list)
     round2_responses: list[AgentResponse] = field(default_factory=list)
     tentative_trades: list[Trade] = field(default_factory=list)
+    execution_plan: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -110,6 +112,7 @@ class CommitteeRunResult:
             "round1_responses": [response.to_dict() for response in self.round1_responses],
             "round2_responses": [response.to_dict() for response in self.round2_responses],
             "tentative_trades": [trade.to_dict() for trade in self.tentative_trades],
+            "execution_plan": self.execution_plan,
             "final_decision": self.final_decision.to_dict(),
         }
 
@@ -187,6 +190,7 @@ class CommitteeRuntime:
         market_data: MarketSnapshot | None = None,
         round2_opinions: list[AgentOpinion] | None = None,
         candidate_plan: Mapping[str, float] | None = None,
+        policy_weights: Mapping[str, float] | None = None,
         mediator_client: Any | None = None,
         final_judge_client: Any | None = None,
     ) -> CommitteeRunResult:
@@ -219,6 +223,7 @@ class CommitteeRuntime:
             kyc=kyc,
             market_data=market_data,
             candidate_plan=candidate_plan,
+            policy_weights=policy_weights,
             final_judge_client=final_judge_client,
             round1_responses=responses,
         )
@@ -233,6 +238,7 @@ class CommitteeRuntime:
         kyc: KYCProfile | None = None,
         market_data: MarketSnapshot | None = None,
         candidate_plan: Mapping[str, float] | None = None,
+        policy_weights: Mapping[str, float] | None = None,
         mediator_client: Any | None = None,
         final_judge_client: Any | None = None,
     ) -> CommitteeRunResult:
@@ -299,6 +305,7 @@ class CommitteeRuntime:
             kyc=kyc,
             market_data=market_data,
             candidate_plan=candidate_plan,
+            policy_weights=policy_weights,
             final_judge_client=final_judge_client,
             round1_responses=round1_responses,
             round2_responses=round2_responses,
@@ -316,6 +323,7 @@ class CommitteeRuntime:
         kyc: KYCProfile | None,
         market_data: MarketSnapshot | None,
         candidate_plan: Mapping[str, float] | None,
+        policy_weights: Mapping[str, float] | None,
         final_judge_client: Any | None,
         round1_responses: list[AgentResponse] | None = None,
         round2_responses: list[AgentResponse] | None = None,
@@ -334,6 +342,22 @@ class CommitteeRuntime:
             candidate_trades = candidate_plan_to_trades(candidate_plan)
             if can_auto_resolve_conflict(consensus, candidate_trades):
                 tentative_trades = candidate_trades
+        execution_plan_payload: dict[str, object] | None = None
+        allow_ticker_conflict_resolution = False
+        execution_mode = _execution_policy_mode()
+        if execution_mode and candidate_plan:
+            execution_plan = build_execution_plan(
+                portfolio=portfolio,
+                candidate_plan=candidate_plan,
+                target_weights=policy_weights,
+                mode=execution_mode,
+                participation_rate=_execution_policy_participation_rate(),
+                max_abs_delta_pct=_execution_policy_max_abs_delta_pct(),
+            )
+            execution_plan_payload = execution_plan.to_dict()
+            if execution_plan.validation_status == "VALID":
+                tentative_trades = execution_plan.trades
+                allow_ticker_conflict_resolution = _execution_policy_resolves_ticker_conflicts()
 
         after_ctx = build_compliance_context_from_portfolio(
             portfolio,
@@ -349,6 +373,7 @@ class CommitteeRuntime:
             votes=all_votes,
             compliance_after=compliance_after,
             candidate_trades=tentative_trades,
+            allow_ticker_conflict_resolution=allow_ticker_conflict_resolution,
         )
         if final_judge_client is not None:
             final_decision = _fill_final_decision_with_llm(
@@ -366,6 +391,7 @@ class CommitteeRuntime:
                     subject: score.to_dict() for subject, score in consensus.items()
                 },
                 "tentative_trades": [trade.to_dict() for trade in tentative_trades],
+                "execution_plan": execution_plan_payload,
             },
         )
         publish_debate_event(
@@ -389,6 +415,7 @@ class CommitteeRuntime:
             round1_responses=list(round1_responses or []),
             round2_responses=list(round2_responses or []),
             tentative_trades=tentative_trades,
+            execution_plan=execution_plan_payload,
             final_decision=final_decision,
         )
 
@@ -518,6 +545,39 @@ def _committee_llm_repair_attempts() -> int:
         return max(0, int(raw))
     except ValueError:
         return 0
+
+
+def _execution_policy_mode() -> str | None:
+    raw = os.environ.get("LIBRA_EXECUTION_POLICY_MODE", "").strip().upper()
+    return raw or None
+
+
+def _execution_policy_participation_rate() -> float:
+    raw = os.environ.get("LIBRA_EXECUTION_PARTICIPATION_RATE", "1.0")
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except ValueError:
+        return 1.0
+
+
+def _execution_policy_max_abs_delta_pct() -> float | None:
+    raw = os.environ.get("LIBRA_EXECUTION_MAX_ABS_DELTA_PCT", "").strip()
+    if not raw:
+        return None
+    try:
+        return max(0.1, float(raw))
+    except ValueError:
+        return None
+
+
+def _execution_policy_resolves_ticker_conflicts() -> bool:
+    return os.environ.get("LIBRA_EXECUTION_RESOLVE_TICKER_CONFLICTS", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
 
 
 def _drop_invalid_mediator_targets() -> bool:

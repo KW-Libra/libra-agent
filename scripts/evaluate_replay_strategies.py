@@ -7,6 +7,7 @@ from datetime import date, datetime
 import json
 import math
 from pathlib import Path
+import random
 import statistics
 from typing import Any
 
@@ -269,6 +270,14 @@ def _extract_decision(raw_row: dict[str, Any]) -> dict[str, Any]:
     final_decision = (
         governance.get("final_decision") if isinstance(governance.get("final_decision"), dict) else {}
     )
+    consensus = (
+        governance.get("consensus_per_subject")
+        if isinstance(governance.get("consensus_per_subject"), dict)
+        else {}
+    )
+    direct_indexing = (
+        result.get("direct_indexing") if isinstance(result.get("direct_indexing"), dict) else {}
+    )
     runtime = result.get("runtime") if isinstance(result.get("runtime"), dict) else {}
     round1 = governance.get("round1_responses") if isinstance(governance.get("round1_responses"), list) else []
     round2 = governance.get("round2_responses") if isinstance(governance.get("round2_responses"), list) else []
@@ -277,6 +286,19 @@ def _extract_decision(raw_row: dict[str, Any]) -> dict[str, Any]:
     candidate_plan: dict[str, float] = {}
     for ticker, delta in raw_plan.items():
         candidate_plan[str(ticker)] = float(delta)
+    raw_direct_plan = (
+        direct_indexing.get("candidate_rebalance_plan")
+        if isinstance(direct_indexing.get("candidate_rebalance_plan"), dict)
+        else {}
+    )
+    direct_candidate_plan = {
+        str(ticker): float(delta) for ticker, delta in raw_direct_plan.items()
+    }
+    conflict_subjects = [
+        str(subject)
+        for subject, score in consensus.items()
+        if isinstance(score, dict) and str(score.get("branch")) == "CONFLICT"
+    ]
     return {
         "date": day,
         "decision": decision.get("decision"),
@@ -285,7 +307,9 @@ def _extract_decision(raw_row: dict[str, Any]) -> dict[str, Any]:
         "confidence": decision.get("confidence"),
         "urgency": decision.get("urgency"),
         "candidate_rebalance_plan": candidate_plan,
+        "direct_indexing_candidate_plan": direct_candidate_plan,
         "committee_trades": final_decision.get("trades") or [],
+        "conflict_subjects": conflict_subjects,
         "user_handoff": bool(notification.get("action_required"))
         or decision.get("decision") == "USER_DECISION_REQUIRED"
         or bool(final_decision.get("user_question")),
@@ -492,6 +516,50 @@ def _target_from_candidate_plan(
     return _normalize_weights(target)
 
 
+def _partial_target_from_policy(
+    positions: dict[str, float],
+    row: dict[str, Any],
+    base_weights: dict[str, float],
+    participation_rate: float,
+) -> dict[str, float]:
+    current = _weights(positions, row)
+    rate = max(0.0, min(1.0, float(participation_rate)))
+    return _normalize_weights(
+        {
+            ticker: current.get(ticker, 0.0)
+            + (base_weights[ticker] - current.get(ticker, 0.0)) * rate
+            for ticker in base_weights
+        }
+    )
+
+
+def _risk_trim_redistribute_target(
+    positions: dict[str, float],
+    row: dict[str, Any],
+    base_weights: dict[str, float],
+    plan: dict[str, float],
+) -> dict[str, float] | None:
+    current = _weights(positions, row)
+    target = {ticker: current.get(ticker, 0.0) for ticker in base_weights}
+    sell_deltas = {ticker: float(delta) for ticker, delta in plan.items() if float(delta) < 0 and ticker in target}
+    proceeds = -sum(sell_deltas.values())
+    if proceeds <= 0:
+        return None
+    for ticker, delta in sell_deltas.items():
+        target[ticker] = max(0.0, target.get(ticker, 0.0) + delta)
+    underweight_gaps = {
+        ticker: max(0.0, base_weights[ticker] - current.get(ticker, 0.0))
+        for ticker in base_weights
+        if ticker not in sell_deltas
+    }
+    total_gap = sum(underweight_gaps.values())
+    if total_gap <= 0:
+        return None
+    for ticker, gap in underweight_gaps.items():
+        target[ticker] = target.get(ticker, 0.0) + proceeds * gap / total_gap
+    return _normalize_weights(target)
+
+
 def simulate_libra_immediate(fixture: dict[str, Any]) -> dict[str, Any]:
     prices = _price_rows(fixture)
     positions = _initial_positions(fixture)
@@ -542,6 +610,128 @@ def simulate_libra_immediate(fixture: dict[str, Any]) -> dict[str, Any]:
         user_handoff_count=user_handoff_count,
         avoided_trade_count=avoided_trade_count,
         parameters={"executed_dates": executed_dates, "execution_target": "candidate_rebalance_plan"},
+    )
+
+
+def simulate_libra_v2_execution_only(
+    fixture: dict[str, Any],
+    *,
+    execution_mode: str,
+    participation_rate: float = 1.0,
+    trigger_decisions: set[str] | None = None,
+    suppress_duplicate_user_issues: bool = False,
+    strategy_suffix: str = "",
+) -> dict[str, Any]:
+    prices = _price_rows(fixture)
+    positions = _initial_positions(fixture)
+    base_weights = _target_weights(fixture)
+    cost_rate = _cost_rate(fixture)
+    decisions_by_date: dict[str, list[dict[str, Any]]] = {}
+    for decision in fixture.get("libra_decisions", []):
+        decisions_by_date.setdefault(str(decision.get("date")), []).append(decision)
+
+    allowed_decisions = trigger_decisions or {"REBALANCE"}
+    trades = 0
+    turnover = 0.0
+    transaction_cost = 0.0
+    executed_dates: list[str] = []
+    trigger_dates: list[str] = []
+    skipped_dates: list[str] = []
+    suppressed_issue_dates: list[str] = []
+    seen_issue_keys: set[str] = set()
+    value_history = [_total_value(positions, prices[0])]
+    for row in prices[1:]:
+        for decision in decisions_by_date.get(str(row["date"]), []):
+            if str(decision.get("decision")) not in allowed_decisions:
+                continue
+            if suppress_duplicate_user_issues and decision.get("decision") == "USER_DECISION_REQUIRED":
+                issue_key = _issue_key(decision)
+                if issue_key in seen_issue_keys:
+                    suppressed_issue_dates.append(str(row["date"]))
+                    continue
+                seen_issue_keys.add(issue_key)
+            source_plan = {
+                str(ticker): float(delta)
+                for ticker, delta in (
+                    decision.get("candidate_rebalance_plan")
+                    or decision.get("direct_indexing_candidate_plan")
+                    or {}
+                ).items()
+            }
+            if not source_plan:
+                skipped_dates.append(str(row["date"]))
+                continue
+            trigger_dates.append(str(row["date"]))
+            if execution_mode == "policy_target":
+                target = _partial_target_from_policy(
+                    positions, row, base_weights, participation_rate=1.0
+                )
+            elif execution_mode == "partial_policy_target":
+                target = _partial_target_from_policy(
+                    positions,
+                    row,
+                    base_weights,
+                    participation_rate=participation_rate,
+                )
+            elif execution_mode == "risk_trim_redistribute":
+                maybe_target = _risk_trim_redistribute_target(
+                    positions,
+                    row,
+                    base_weights,
+                    source_plan,
+                )
+                if maybe_target is None:
+                    skipped_dates.append(str(row["date"]))
+                    continue
+                target = maybe_target
+            else:
+                raise ValueError(f"Unsupported v2 execution mode: {execution_mode}")
+            positions, step_turnover, step_cost = _rebalance_to_weights(
+                positions,
+                row,
+                target,
+                cost_rate,
+            )
+            if step_turnover > 0:
+                trades += 1
+                turnover += step_turnover
+                transaction_cost += step_cost
+                executed_dates.append(str(row["date"]))
+            break
+        value_history.append(_total_value(positions, row))
+
+    decision_count, trace_complete_count, user_handoff_count, _rebalance_count = _decision_counts(fixture)
+    if execution_mode == "policy_target":
+        name = "LIBRA-v2 Policy Target Immediate (execution-only)"
+    elif execution_mode == "partial_policy_target":
+        name = f"LIBRA-v2 Partial Policy Target {int(participation_rate * 100)}% (execution-only)"
+    else:
+        name = "LIBRA-v2 Risk Trim Redistribute (execution-only)"
+    if strategy_suffix:
+        name = f"{name} {strategy_suffix}"
+    return _summary(
+        name=name,
+        group="libra_v2_execution_only",
+        value_history=value_history,
+        initial_value=float(fixture["initial_value_krw"]),
+        trades=trades,
+        turnover=turnover,
+        transaction_cost=transaction_cost,
+        annualization_factor=_annualization_factor(fixture),
+        decision_count=decision_count,
+        trace_complete_count=trace_complete_count,
+        user_handoff_count=user_handoff_count,
+        parameters={
+            "execution_mode": execution_mode,
+            "participation_rate": participation_rate,
+            "trigger_decisions": sorted(allowed_decisions),
+            "trigger_dates": trigger_dates,
+            "executed_dates": executed_dates,
+            "skipped_dates": skipped_dates,
+            "suppressed_issue_dates": suppressed_issue_dates,
+            "suppress_duplicate_user_issues": suppress_duplicate_user_issues,
+            "pre_registered_role": "execution-only ablation; does not rerun LLM in-loop",
+        },
     )
 
 
@@ -715,12 +905,124 @@ def simulate_execution_policy(
     )
 
 
+def _rebalance_signal_decisions(fixture: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        decision
+        for decision in fixture.get("libra_decisions", [])
+        if decision.get("decision") == "REBALANCE"
+        and (decision.get("candidate_rebalance_plan") or decision.get("direct_indexing_candidate_plan"))
+    ]
+
+
+def simulate_same_count_random_placebo(
+    fixture: dict[str, Any],
+    *,
+    execution_mode: str,
+    seed: int,
+) -> dict[str, Any]:
+    signal_decisions = _rebalance_signal_decisions(fixture)
+    prices = _price_rows(fixture)
+    eligible_dates = [str(row["date"]) for row in prices[1:]]
+    if not signal_decisions or len(signal_decisions) > len(eligible_dates):
+        row = simulate_libra_v2_execution_only(fixture, execution_mode=execution_mode)
+        row["strategy"] = f"Random Same-Count Placebo ({execution_mode})"
+        row["group"] = "placebo"
+        row["parameters"] = {
+            **dict(row.get("parameters") or {}),
+            "seed": seed,
+            "note": "No available signal decisions; row mirrors empty v2 execution-only simulation.",
+        }
+        return row
+
+    rng = random.Random(seed)
+    sampled_dates = sorted(rng.sample(eligible_dates, len(signal_decisions)))
+    replay_fixture = deepcopy(fixture)
+    decisions = []
+    plan_index = 0
+    plans = [
+        decision.get("candidate_rebalance_plan")
+        or decision.get("direct_indexing_candidate_plan")
+        or {}
+        for decision in signal_decisions
+    ]
+    for decision in fixture.get("libra_decisions", []):
+        copy_decision = dict(decision)
+        if str(copy_decision.get("date")) in sampled_dates and plan_index < len(plans):
+            copy_decision["decision"] = "REBALANCE"
+            copy_decision["candidate_rebalance_plan"] = dict(plans[plan_index])
+            plan_index += 1
+        else:
+            copy_decision["decision"] = "DEFER"
+            copy_decision["candidate_rebalance_plan"] = {}
+        decisions.append(copy_decision)
+    replay_fixture["libra_decisions"] = decisions
+    row = simulate_libra_v2_execution_only(replay_fixture, execution_mode=execution_mode)
+    row["strategy"] = f"Random Same-Count Placebo ({execution_mode}, seed={seed})"
+    row["group"] = "placebo"
+    row["parameters"] = {
+        **dict(row.get("parameters") or {}),
+        "seed": seed,
+        "sampled_dates": sampled_dates,
+        "source_signal_count": len(signal_decisions),
+    }
+    return row
+
+
 def _decision_breakdown(fixture: dict[str, Any]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for decision in fixture.get("libra_decisions", []):
         key = str(decision.get("decision"))
         counts[key] = counts.get(key, 0) + 1
     return dict(sorted(counts.items()))
+
+
+def _user_decision_required_issue_stats(fixture: dict[str, Any], *, cooldown_days: int = 20) -> dict[str, Any]:
+    issues: dict[str, dict[str, Any]] = {}
+    duplicates = 0
+    for decision in fixture.get("libra_decisions", []):
+        if not (decision.get("user_handoff") or decision.get("decision") == "USER_DECISION_REQUIRED"):
+            continue
+        key = _issue_key(decision)
+        issue = issues.get(key)
+        if issue is None:
+            issues[key] = {
+                "issue_key": key,
+                "first_seen": decision.get("date"),
+                "last_seen": decision.get("date"),
+                "count": 1,
+                "subjects": decision.get("conflict_subjects") or [],
+                "branch": decision.get("branch"),
+            }
+        else:
+            duplicates += 1
+            issue["last_seen"] = decision.get("date")
+            issue["count"] = int(issue["count"]) + 1
+    total = sum(int(item["count"]) for item in issues.values())
+    return {
+        "total_user_decision_required_events": total,
+        "unique_user_issues": len(issues),
+        "duplicate_suppressed_if_stateful": duplicates,
+        "duplicate_suppression_rate_pct": round((duplicates / total) * 100.0, 3) if total else 0.0,
+        "cooldown_days": cooldown_days,
+        "issues": sorted(issues.values(), key=lambda item: str(item["first_seen"])),
+    }
+
+
+def _issue_key(decision: dict[str, Any]) -> str:
+    branch = str(decision.get("branch") or "UNKNOWN")
+    plan = decision.get("direct_indexing_candidate_plan") or decision.get("candidate_rebalance_plan") or {}
+    if isinstance(plan, dict) and plan:
+        tickers = ",".join(sorted(str(ticker) for ticker in plan))
+        directions = ",".join(
+            f"{ticker}:{'reduce' if float(delta) < 0 else 'increase'}"
+            for ticker, delta in sorted(plan.items())
+        )
+        return f"{branch}|plan={tickers}|{directions}"
+    subjects = decision.get("conflict_subjects") or []
+    if subjects:
+        return f"{branch}|subjects={','.join(sorted(str(subject) for subject in subjects))}"
+    summary = str(decision.get("summary") or "")
+    return f"{branch}|summary={summary[:80]}"
 
 
 def _find_strategy(rows: list[dict[str, Any]], strategy: str) -> dict[str, Any] | None:
@@ -758,6 +1060,46 @@ def build_results(
             execution_target=execution_target,
         )
     ]
+    execution_ablation = [
+        simulate_libra_v2_execution_only(fixture, execution_mode="policy_target"),
+        simulate_libra_v2_execution_only(
+            fixture,
+            execution_mode="policy_target",
+            trigger_decisions={"REBALANCE", "USER_DECISION_REQUIRED"},
+            suppress_duplicate_user_issues=True,
+            strategy_suffix="with Stateful Intents",
+        ),
+        simulate_libra_v2_execution_only(
+            fixture,
+            execution_mode="risk_trim_redistribute",
+            trigger_decisions={"REBALANCE", "USER_DECISION_REQUIRED"},
+            suppress_duplicate_user_issues=True,
+            strategy_suffix="with Stateful Intents",
+        ),
+        simulate_libra_v2_execution_only(
+            fixture,
+            execution_mode="partial_policy_target",
+            participation_rate=0.25,
+        ),
+        simulate_libra_v2_execution_only(
+            fixture,
+            execution_mode="partial_policy_target",
+            participation_rate=0.50,
+        ),
+        simulate_libra_v2_execution_only(
+            fixture,
+            execution_mode="partial_policy_target",
+            participation_rate=0.75,
+        ),
+        simulate_libra_v2_execution_only(fixture, execution_mode="risk_trim_redistribute"),
+    ]
+    placebo_rows = [
+        simulate_same_count_random_placebo(
+            fixture,
+            execution_mode="policy_target",
+            seed=17,
+        )
+    ]
     for delay in sensitivity_delay_days:
         candidates.append(
             simulate_execution_policy(
@@ -780,7 +1122,7 @@ def build_results(
             )
         )
 
-    rows = baselines + candidates
+    rows = baselines + candidates + execution_ablation + placebo_rows
     libra_v1 = _find_strategy(rows, "LIBRA v1 Immediate Execution")
     threshold_row = _find_strategy(rows, "Threshold 5% Rebalancing")
     quarterly_row = _find_strategy(rows, "Quarterly Rebalancing")
@@ -815,6 +1157,7 @@ def build_results(
         }
     ranked = sorted(rows, key=lambda item: float(item["ending_value_krw"]), reverse=True)
     decision_count, trace_complete_count, user_handoff_count, rebalance_count = _decision_counts(fixture)
+    issue_stats = _user_decision_required_issue_stats(fixture)
     return {
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "source_fixture": str(source_fixture_path),
@@ -838,11 +1181,16 @@ def build_results(
         },
         "baselines": baselines,
         "candidates": candidates,
+        "execution_ablation": execution_ablation,
+        "placebo": placebo_rows,
         "ranked_by_ending_value": ranked,
         "performance_checks": performance_checks,
+        "user_decision_required_issue_stats": issue_stats,
         "interpretation_guardrails": [
             "The replay raw is the single LLM decision source; strategy rows do not rerun Claude.",
             "LIBRA v1 Immediate Execution uses final decision candidate_rebalance_plan deltas on the signal date.",
+            "LIBRA-v2 execution-only rows reinterpret fixed LLM signals through deterministic execution policy; they are not in-loop proof.",
+            "Random Same-Count Placebo uses the same number of trigger dates to test whether LLM trigger timing matters.",
             "LIBRA-v3 Confirmation Gate keeps the REBALANCE signal fixed, observes residual drift after T+N, and executes after the configured lag.",
             "T+N rows are sensitivity analysis only. They are not valid proof of a v3 service backtest because later LLM inputs would differ after skipped or delayed executions.",
             "Do not present any T+N policy as final unless it is replayed in-loop so portfolio state changes feed into subsequent LLM calls.",
@@ -932,6 +1280,18 @@ def _write_md(payload: dict[str, Any], path: Path) -> None:
     )
     for row in payload["ranked_by_ending_value"]:
         lines.append("| " + " | ".join(_format(row.get(header)) for header in headers) + " |")
+    issue_stats = payload.get("user_decision_required_issue_stats") or {}
+    lines.extend(
+        [
+            "",
+            "## USER_DECISION_REQUIRED Issues",
+            "",
+            f"- total events: `{issue_stats.get('total_user_decision_required_events')}`",
+            f"- unique issues: `{issue_stats.get('unique_user_issues')}`",
+            f"- duplicate suppressed if stateful: `{issue_stats.get('duplicate_suppressed_if_stateful')}`",
+            f"- duplicate suppression rate pct: `{issue_stats.get('duplicate_suppression_rate_pct')}`",
+        ]
+    )
     lines.extend(
         [
             "",

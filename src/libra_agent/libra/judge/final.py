@@ -173,6 +173,8 @@ def cash_neutral_trades(
 def can_auto_resolve_conflict(
     consensus_per_subject: dict[str, ConsensusScore],
     candidate_trades: list[Trade],
+    *,
+    allow_ticker_conflicts: bool = False,
 ) -> bool:
     if not candidate_trades:
         return False
@@ -181,7 +183,12 @@ def can_auto_resolve_conflict(
         for subject, score in consensus_per_subject.items()
         if score.branch == ConsensusBranch.CONFLICT
     }
-    return conflict_subjects == {"PORTFOLIO"}
+    if conflict_subjects == {"PORTFOLIO"}:
+        return True
+    if not allow_ticker_conflicts or not conflict_subjects:
+        return False
+    trade_subjects = {trade.subject for trade in candidate_trades}
+    return conflict_subjects <= trade_subjects | {"PORTFOLIO"}
 
 
 def render_rule_based_final_decision(
@@ -190,6 +197,7 @@ def render_rule_based_final_decision(
     votes: list[Vote],
     compliance_after: ComplianceCheck,
     candidate_trades: list[Trade] | None = None,
+    allow_ticker_conflict_resolution: bool = False,
 ) -> FinalDecision:
     """Deterministic final branch renderer used before Final Judge LLM wiring.
 
@@ -204,7 +212,11 @@ def render_rule_based_final_decision(
     trades = cash_neutral_trades(
         list(candidate_trades or compute_tentative_trades(consensus_per_subject, grouped))
     )
-    auto_resolved_conflict = can_auto_resolve_conflict(consensus_per_subject, trades)
+    auto_resolved_conflict = can_auto_resolve_conflict(
+        consensus_per_subject,
+        trades,
+        allow_ticker_conflicts=allow_ticker_conflict_resolution,
+    )
     if (
         decision == DecisionType.USER_DECISION_REQUIRED
         and branch == DecisionBranch.STRONG_CONFLICT
@@ -258,10 +270,16 @@ def render_rule_based_final_decision(
     if decision == DecisionType.HOLD:
         trades = []
     if branch == DecisionBranch.CONFLICT_RESOLUTION:
-        reasoning = (
-            "포트폴리오 레벨 의견 충돌은 있었지만, direct-indexing drift 초안이 "
-            "10%p cap과 현금중립 조건을 만족해 부분 리밸런싱으로 자동 해소합니다."
-        )
+        if allow_ticker_conflict_resolution:
+            reasoning = (
+                "의견 충돌은 있었지만, 리밸런싱 신호를 사전 정의된 포트폴리오 "
+                "execution policy로 번역한 결과 현금중립 실행 계획이 만들어져 자동 해소합니다."
+            )
+        else:
+            reasoning = (
+                "포트폴리오 레벨 의견 충돌은 있었지만, direct-indexing drift 초안이 "
+                "10%p cap과 현금중립 조건을 만족해 부분 리밸런싱으로 자동 해소합니다."
+            )
     elif decision == DecisionType.DEFER and not trades:
         reasoning = "리밸런싱 합의는 있었지만 실행 가능한 종목별 거래가 없어 자동 체결을 보류합니다."
     else:

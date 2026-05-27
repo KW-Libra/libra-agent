@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 
 from libra_agent.libra.committee import (
@@ -18,6 +19,7 @@ from libra_agent.libra.judge.final import (
     determine_branch,
     render_rule_based_final_decision,
 )
+from libra_agent.libra.execution_policy import ExecutionMode, IssueStateManager, build_execution_plan
 from libra_agent.libra.mediator import (
     classify_branch,
     compute_consensus,
@@ -193,7 +195,11 @@ class LibraV1GovernanceTests(unittest.TestCase):
             build_compliance_context_from_portfolio(
                 _portfolio(),
                 proposed_trades=[],
-                ips=IPSConfig(single_ticker_limit_pct=100.0, sector_limit_pct=100.0),
+                ips=IPSConfig(
+                    single_ticker_limit_pct=100.0,
+                    sector_limit_pct=101.0,
+                    min_cash_pct=0.0,
+                ),
                 kyc=persona_v1_kyc(),
             ),
             "AFTER",
@@ -245,7 +251,11 @@ class LibraV1GovernanceTests(unittest.TestCase):
             build_compliance_context_from_portfolio(
                 portfolio,
                 proposed_trades=candidate_trades,
-                ips=IPSConfig(single_ticker_limit_pct=100.0, sector_limit_pct=100.0),
+                ips=IPSConfig(
+                    single_ticker_limit_pct=100.0,
+                    sector_limit_pct=101.0,
+                    min_cash_pct=0.0,
+                ),
                 kyc=persona_v1_kyc(),
             ),
             "AFTER",
@@ -294,6 +304,132 @@ class LibraV1GovernanceTests(unittest.TestCase):
 
         self.assertEqual(rendered.decision, DecisionType.USER_DECISION_REQUIRED)
         self.assertEqual(rendered.branch, DecisionBranch.STRONG_CONFLICT)
+
+    def test_ticker_conflict_can_opt_in_to_execution_policy_resolution(self) -> None:
+        votes = [
+            Vote("A", Direction.DECREASE, -8.0, 0.8),
+            Vote("A", Direction.INCREASE, 8.0, 0.8),
+        ]
+        consensus = consensus_by_subject(
+            [AgentOpinion("Risk", votes=[votes[0]]), AgentOpinion("Profit", votes=[votes[1]])]
+        )
+        candidate_trades = candidate_plan_to_trades({"A": -0.08, "B": 0.08})
+        compliance_after = default_compliance_engine().check(
+            build_compliance_context_from_portfolio(
+                _portfolio(),
+                proposed_trades=candidate_trades,
+                ips=IPSConfig(single_ticker_limit_pct=100.0, sector_limit_pct=100.0),
+                kyc=persona_v1_kyc(),
+            ),
+            "AFTER",
+        )
+
+        rendered = render_rule_based_final_decision(
+            consensus_per_subject=consensus,
+            votes=votes,
+            compliance_after=compliance_after,
+            candidate_trades=candidate_trades,
+            allow_ticker_conflict_resolution=True,
+        )
+
+        self.assertEqual(rendered.decision, DecisionType.REBALANCE)
+        self.assertEqual(rendered.branch, DecisionBranch.CONFLICT_RESOLUTION)
+
+    def test_execution_policy_repairs_one_sided_sell_cash_neutral(self) -> None:
+        portfolio = PortfolioSnapshot.from_dict(
+            {
+                "generated_at": "2026-05-10T09:00:00+09:00",
+                "holdings": [
+                    {"ticker": "A", "company_name": "A", "weight": 0.34, "sector": "EQUITY"},
+                    {"ticker": "B", "company_name": "B", "weight": 0.14, "sector": "EQUITY"},
+                    {"ticker": "C", "company_name": "C", "weight": 0.16, "sector": "EQUITY"},
+                    {"ticker": "D", "company_name": "D", "weight": 0.18, "sector": "EQUITY"},
+                    {"ticker": "E", "company_name": "E", "weight": 0.18, "sector": "EQUITY"},
+                ],
+                "cash_weight": 0.0,
+            }
+        )
+
+        plan = build_execution_plan(
+            portfolio=portfolio,
+            candidate_plan={"A": -0.06},
+            target_weights={"A": 0.2, "B": 0.2, "C": 0.2, "D": 0.2, "E": 0.2},
+            mode=ExecutionMode.RISK_TRIM_AND_REDISTRIBUTE,
+        )
+
+        self.assertEqual(plan.validation_status, "VALID")
+        self.assertEqual(plan.trade_deltas["A"], -0.06)
+        self.assertAlmostEqual(sum(plan.trade_deltas.values()), 0.0)
+        self.assertGreater(plan.trade_deltas["B"], 0.0)
+        self.assertGreater(plan.trade_deltas["C"], 0.0)
+
+    def test_issue_state_manager_suppresses_duplicate_issue(self) -> None:
+        manager = IssueStateManager(cooldown_observations=20)
+
+        first_status, first_state = manager.observe(
+            branch="STRONG_CONFLICT",
+            candidate_plan={"035420": -0.1},
+            seen_at="2020-05-25",
+        )
+        second_status, second_state = manager.observe(
+            branch="STRONG_CONFLICT",
+            candidate_plan={"035420": -0.11},
+            seen_at="2020-06-22",
+        )
+
+        self.assertEqual(first_status, "NEW_ISSUE")
+        self.assertEqual(second_status, "SUPPRESSED_BY_COOLDOWN")
+        self.assertEqual(first_state.issue_key, second_state.issue_key)
+        self.assertEqual(second_state.count, 2)
+
+    def test_committee_runtime_can_opt_in_execution_policy_for_portfolio_conflict(self) -> None:
+        old_mode = os.environ.get("LIBRA_EXECUTION_POLICY_MODE")
+        old_resolve = os.environ.get("LIBRA_EXECUTION_RESOLVE_TICKER_CONFLICTS")
+        try:
+            os.environ["LIBRA_EXECUTION_POLICY_MODE"] = "RISK_TRIM_AND_REDISTRIBUTE"
+            os.environ["LIBRA_EXECUTION_RESOLVE_TICKER_CONFLICTS"] = "1"
+            portfolio = PortfolioSnapshot.from_dict(
+                {
+                    "generated_at": "2026-05-10T09:00:00+09:00",
+                    "holdings": [
+                        {"ticker": "A", "company_name": "A", "weight": 0.34, "sector": "EQUITY"},
+                        {"ticker": "B", "company_name": "B", "weight": 0.14, "sector": "EQUITY"},
+                        {"ticker": "C", "company_name": "C", "weight": 0.16, "sector": "EQUITY"},
+                        {"ticker": "D", "company_name": "D", "weight": 0.18, "sector": "EQUITY"},
+                        {"ticker": "E", "company_name": "E", "weight": 0.18, "sector": "EQUITY"},
+                    ],
+                    "cash_weight": 0.0,
+                }
+            )
+
+            result = CommitteeRuntime().run_from_agent_responses(
+                portfolio=portfolio,
+                responses=[
+                    _response("risk", direction=-0.9, focus_tickers=["PORTFOLIO"]),
+                    _response("macro", direction=0.9, focus_tickers=["PORTFOLIO"]),
+                ],
+                candidate_plan={"A": -0.06},
+                policy_weights={"A": 0.2, "B": 0.2, "C": 0.2, "D": 0.2, "E": 0.2},
+                ips=IPSConfig(
+                    single_ticker_limit_pct=100.0,
+                    sector_limit_pct=101.0,
+                    min_cash_pct=0.0,
+                ),
+                kyc=persona_v1_kyc(),
+            )
+
+            self.assertEqual(result.final_decision.decision, DecisionType.REBALANCE)
+            self.assertEqual(result.final_decision.branch, DecisionBranch.CONFLICT_RESOLUTION)
+            self.assertEqual(result.execution_plan["validation_status"], "VALID")
+        finally:
+            if old_mode is None:
+                os.environ.pop("LIBRA_EXECUTION_POLICY_MODE", None)
+            else:
+                os.environ["LIBRA_EXECUTION_POLICY_MODE"] = old_mode
+            if old_resolve is None:
+                os.environ.pop("LIBRA_EXECUTION_RESOLVE_TICKER_CONFLICTS", None)
+            else:
+                os.environ["LIBRA_EXECUTION_RESOLVE_TICKER_CONFLICTS"] = old_resolve
 
     def test_one_sided_trade_consensus_is_not_executable_without_funding_leg(self) -> None:
         trades = cash_neutral_trades(
