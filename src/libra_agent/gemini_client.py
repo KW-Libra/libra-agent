@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -12,6 +13,7 @@ import httpx
 from .errors import ChatClientError
 
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 45.0
+_USAGE_LOG_LOCK = threading.Lock()
 
 
 class GeminiClientError(ChatClientError):
@@ -63,23 +65,25 @@ class GeminiChatClient:
                 with self._http_client() as client:
                     response = client.post(self._generate_url(), json=payload)
                     response.raise_for_status()
+                response_payload = response.json()
+                self._log_usage(response_payload)
                 break
             except httpx.HTTPStatusError as exc:
                 if not self._should_retry_status(exc.response.status_code, attempt, retry_attempts):
                     raise GeminiClientError(
                         f"Failed to call Gemini API: {self._redact_api_key(exc)}"
-                    ) from exc
+                    ) from None
                 time.sleep(self._retry_delay_seconds(attempt))
             except httpx.HTTPError as exc:
                 if attempt >= retry_attempts:
                     raise GeminiClientError(
                         f"Failed to call Gemini API: {self._redact_api_key(exc)}"
-                    ) from exc
+                    ) from None
                 time.sleep(self._retry_delay_seconds(attempt))
         else:  # pragma: no cover - loop always breaks or raises
             raise GeminiClientError("Failed to call Gemini API after retries.")
 
-        text = self._extract_text(response.json())
+        text = self._extract_text(response_payload)
         if not text.strip():
             raise GeminiClientError("Gemini returned an empty response body.")
         return self._decode_json(text)
@@ -147,6 +151,43 @@ class GeminiChatClient:
 
     def _should_retry_status(self, status_code: int, attempt: int, retry_attempts: int) -> bool:
         return attempt < retry_attempts and status_code in {429, 500, 502, 503, 504}
+
+    def _log_usage(self, payload: Any) -> None:
+        log_path = os.environ.get("LIBRA_LLM_USAGE_LOG")
+        if not log_path:
+            return
+        if not isinstance(payload, Mapping):
+            return
+        row = {
+            "created_at": datetime.now(UTC).isoformat(),
+            "provider": "gemini",
+            "model": self.model,
+            "usage": self._sanitize_json_value(payload.get("usageMetadata")),
+            "stop_reason": self._stop_reason(payload),
+        }
+        path = os.fspath(log_path)
+        with _USAGE_LOG_LOCK:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+    def _stop_reason(self, payload: Mapping[str, Any]) -> str | None:
+        candidates = payload.get("candidates")
+        if not isinstance(candidates, list) or not candidates:
+            return None
+        first = candidates[0]
+        if not isinstance(first, Mapping):
+            return None
+        value = first.get("finishReason")
+        return str(value) if value is not None else None
+
+    def _sanitize_json_value(self, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {str(key): self._sanitize_json_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._sanitize_json_value(item) for item in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
 
     def _redact_api_key(self, value: Any) -> str:
         text = str(value)

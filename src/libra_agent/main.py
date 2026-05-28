@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -29,6 +31,9 @@ from libra_agent.config import settings
 from libra_agent.runtime.checkpointer import close_checkpointer, init_checkpointer
 
 log = get_logger(__name__)
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 @asynccontextmanager
@@ -83,4 +88,13 @@ def main() -> None:
     """Console-script entrypoint for the deployed FastAPI app."""
     import uvicorn
 
-    uvicorn.run("libra_agent.main:app", host=settings.host, port=settings.port)
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        import uvicorn.loops.asyncio as uvicorn_asyncio
+
+        uvicorn_asyncio.asyncio_loop_factory = lambda use_subprocess=False: asyncio.SelectorEventLoop
+    uvicorn.run(app, host=settings.host, port=settings.port, loop="asyncio")
+
+
+if __name__ == "__main__":
+    main()

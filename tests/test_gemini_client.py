@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import unittest
 
 import httpx
@@ -17,6 +18,7 @@ class GeminiChatClientTests(unittest.TestCase):
             "LIBRA_GEMINI_RETRY_BASE_DELAY_SECONDS": os.environ.get(
                 "LIBRA_GEMINI_RETRY_BASE_DELAY_SECONDS"
             ),
+            "LIBRA_LLM_USAGE_LOG": os.environ.get("LIBRA_LLM_USAGE_LOG"),
         }
         os.environ["LIBRA_GEMINI_FREE_TIER"] = "false"
         os.environ["LIBRA_GEMINI_RETRY_BASE_DELAY_SECONDS"] = "0"
@@ -45,13 +47,19 @@ class GeminiChatClientTests(unittest.TestCase):
                 json={
                     "candidates": [
                         {
+                            "finishReason": "STOP",
                             "content": {
                                 "parts": [
                                     {"text": '결과입니다. {"decision":"HOLD","confidence":0.72}'}
                                 ]
                             }
                         }
-                    ]
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 11,
+                        "candidatesTokenCount": 7,
+                        "totalTokenCount": 18,
+                    },
                 },
             )
 
@@ -67,6 +75,48 @@ class GeminiChatClientTests(unittest.TestCase):
         self.assertEqual(payload["decision"], "HOLD")
         self.assertEqual(payload["confidence"], 0.72)
         self.assertEqual(len(requests), 1)
+
+    def test_chat_json_writes_usage_log_when_configured(self) -> None:
+        os.environ["LIBRA_GEMINI_RETRY_ATTEMPTS"] = "0"
+        with tempfile.NamedTemporaryFile(delete=False) as temp:
+            usage_log = temp.name
+        os.environ["LIBRA_LLM_USAGE_LOG"] = usage_log
+
+        def handler(_: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {
+                            "finishReason": "STOP",
+                            "content": {"parts": [{"text": '{"decision":"HOLD"}'}]},
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 3,
+                        "candidatesTokenCount": 2,
+                        "totalTokenCount": 5,
+                    },
+                },
+            )
+
+        client = GeminiChatClient(
+            api_key="test-key",
+            model="gemini-test",
+            transport=httpx.MockTransport(handler),
+        )
+
+        self.assertEqual(client.chat_json(system_prompt="s", user_prompt="u"), {"decision": "HOLD"})
+
+        with open(usage_log, encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+        os.unlink(usage_log)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["provider"], "gemini")
+        self.assertEqual(rows[0]["model"], "gemini-test")
+        self.assertEqual(rows[0]["stop_reason"], "STOP")
+        self.assertEqual(rows[0]["usage"]["totalTokenCount"], 5)
 
     def test_ensure_available_checks_model_endpoint(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

@@ -111,16 +111,32 @@ def _load_dotenv(path: Path | None) -> None:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key:
+        if key and key not in os.environ:
             os.environ[key] = value
 
 
 def _set_default_env(args: argparse.Namespace) -> None:
     _load_dotenv(Path(args.env_file) if args.env_file else None)
-    os.environ.setdefault("LIBRA_LLM_PROVIDER", "anthropic")
-    os.environ.setdefault("LIBRA_ANTHROPIC_MODEL", str(args.anthropic_model or "claude-sonnet-4-6"))
+    backend = str(getattr(args, "backend", "") or "").strip().lower()
+    if backend == "gemini":
+        gemini_model = (
+            str(getattr(args, "gemini_model", "") or "").strip()
+            or os.environ.get("LIBRA_GEMINI_MODEL")
+            or os.environ.get("GEMINI_MODEL")
+            or "gemini-2.5-flash"
+        )
+        os.environ.setdefault("LIBRA_LLM_PROVIDER", "gemini")
+        os.environ.setdefault("LIBRA_GEMINI_MODEL", gemini_model)
+        os.environ.setdefault("GEMINI_MODEL", gemini_model)
+        os.environ.setdefault("LLM_ROUTING_POLICY", "gemini")
+    else:
+        os.environ.setdefault("LIBRA_LLM_PROVIDER", backend or "anthropic")
+        os.environ.setdefault(
+            "LIBRA_ANTHROPIC_MODEL",
+            str(args.anthropic_model or "claude-sonnet-4-6"),
+        )
+        os.environ.setdefault("LLM_ROUTING_POLICY", "claude")
     os.environ.setdefault("LIBRA_DOMAIN_AGENTS_ENABLED", "true")
-    os.environ.setdefault("LLM_ROUTING_POLICY", "claude")
     os.environ.setdefault("LIBRA_DISABLE_AGENT_FALLBACKS", "true")
     os.environ.setdefault("LIBRA_SENTIMENT_PHASE2_ENABLED", "false")
     os.environ.setdefault("LIBRA_LLM_TIMEOUT_SECONDS", "180")
@@ -900,6 +916,7 @@ def replay(args: argparse.Namespace) -> dict[str, Any]:
         "usage_log": str(Path(args.usage_log)) if args.usage_log else None,
         "backend": getattr(args, "backend", None),
         "anthropic_model": args.anthropic_model or os.environ.get("LIBRA_ANTHROPIC_MODEL"),
+        "gemini_model": args.gemini_model or os.environ.get("LIBRA_GEMINI_MODEL"),
         "runtime": "JudgeOrchestrator.run_v1_committee",
         "domain_agents_enabled": os.environ.get("LIBRA_DOMAIN_AGENTS_ENABLED"),
         "llm_routing_policy": os.environ.get("LLM_ROUTING_POLICY"),
@@ -944,7 +961,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-out", help="Optional JSONL path for full raw LIBRA results.")
     parser.add_argument("--append-raw", action="store_true", help="Append to --raw-out instead of replacing it.")
     parser.add_argument("--resume-raw", help="Existing raw JSONL prefix to resume from without recomputing prior days.")
-    parser.add_argument("--usage-log", help="Anthropic usage JSONL path. Also sets LIBRA_LLM_USAGE_LOG.")
+    parser.add_argument("--usage-log", help="LLM usage JSONL path. Also sets LIBRA_LLM_USAGE_LOG.")
     parser.add_argument("--trace-out", help="Optional compact debate event JSONL path.")
     parser.add_argument("--env-file", help="Optional dotenv file loaded before opening the LLM backend.")
     parser.add_argument("--query", default=DEFAULT_QUERY)

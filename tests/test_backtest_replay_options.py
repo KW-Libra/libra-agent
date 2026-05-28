@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 from pathlib import Path
+import tempfile
 import unittest
 
 
@@ -54,6 +56,69 @@ class BacktestReplayOptionTests(unittest.TestCase):
             self.replay._decision_schedule(rows, args),
             {"2021-01-04", "2021-01-11"},
         )
+
+    def test_gemini_backend_sets_gemini_routing_defaults(self) -> None:
+        keys = [
+            "LIBRA_LLM_PROVIDER",
+            "LIBRA_GEMINI_MODEL",
+            "GEMINI_MODEL",
+            "LLM_ROUTING_POLICY",
+        ]
+        old_env = {key: os.environ.get(key) for key in keys}
+        for key in keys:
+            os.environ.pop(key, None)
+        try:
+            args = argparse.Namespace(
+                backend="gemini",
+                env_file=None,
+                gemini_model="gemini-2.5-flash-lite",
+                anthropic_model=None,
+                usage_log=None,
+            )
+
+            self.replay._set_default_env(args)
+
+            self.assertEqual(os.environ["LIBRA_LLM_PROVIDER"], "gemini")
+            self.assertEqual(os.environ["LIBRA_GEMINI_MODEL"], "gemini-2.5-flash-lite")
+            self.assertEqual(os.environ["GEMINI_MODEL"], "gemini-2.5-flash-lite")
+            self.assertEqual(os.environ["LLM_ROUTING_POLICY"], "gemini")
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_env_file_does_not_override_explicit_environment(self) -> None:
+        keys = ["LIBRA_DOMAIN_AGENTS_ENABLED", "LIBRA_LLM_PROVIDER", "LLM_ROUTING_POLICY"]
+        old_env = {key: os.environ.get(key) for key in keys}
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as temp:
+            temp.write("LIBRA_DOMAIN_AGENTS_ENABLED=false\n")
+            env_file = temp.name
+        try:
+            os.environ["LIBRA_DOMAIN_AGENTS_ENABLED"] = "true"
+            os.environ.pop("LIBRA_LLM_PROVIDER", None)
+            os.environ.pop("LLM_ROUTING_POLICY", None)
+            args = argparse.Namespace(
+                backend="gemini",
+                env_file=env_file,
+                gemini_model="gemini-2.5-flash",
+                anthropic_model=None,
+                usage_log=None,
+            )
+
+            self.replay._set_default_env(args)
+
+            self.assertEqual(os.environ["LIBRA_DOMAIN_AGENTS_ENABLED"], "true")
+            self.assertEqual(os.environ["LIBRA_LLM_PROVIDER"], "gemini")
+            self.assertEqual(os.environ["LLM_ROUTING_POLICY"], "gemini")
+        finally:
+            os.unlink(env_file)
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_portfolio_payload_includes_point_in_time_price_history(self) -> None:
         prices = [

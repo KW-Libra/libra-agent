@@ -47,4 +47,4 @@ if ($Provider -eq "llama_cpp") {
   $env:LIBRA_LLAMA_LAUNCH_SERVER = "false"
 }
 
-& $Python -m uvicorn libra_agent.main:app --host $HostName --port $Port
+& $Python -m libra_agent.main
