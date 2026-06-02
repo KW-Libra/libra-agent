@@ -20,6 +20,34 @@ class ApiFailingGraph:
         yield
 
 
+class InterruptThenFailingGraph:
+    async def astream_events(self, *_args, **_kwargs):
+        yield {"event": "on_chain_start", "name": "human_review"}
+        raise RuntimeError("langgraph interrupt stream raised")
+
+    async def aget_state(self, _config):
+        return SimpleNamespace(
+            interrupts=[
+                SimpleNamespace(
+                    id="interrupt-1",
+                    value={
+                        "type": "human_approval",
+                        "reason": "approval_required",
+                        "message": "최종 결정 적용 전에 사용자 확인이 필요합니다.",
+                        "decision": "USER_DECISION_REQUIRED",
+                        "branch": "USER_APPROVAL_REQUIRED",
+                        "options": [
+                            {"decision": "APPROVE", "label": "승인"},
+                            {"decision": "REJECT", "label": "거절"},
+                            {"decision": "REVISE", "label": "수정 요청"},
+                        ],
+                    },
+                )
+            ],
+            values={},
+        )
+
+
 def _request() -> SimpleNamespace:
     return SimpleNamespace(
         trigger="pull",
@@ -61,3 +89,18 @@ async def test_run_failed_event_preserves_api_error_code(monkeypatch):
 
     assert payload["code"] == "VALIDATION_FAILED"
     assert payload["error"] == "bad request"
+
+
+async def test_pending_interrupt_is_not_reported_as_run_failed(monkeypatch):
+    monkeypatch.setattr(sse, "build_graph", lambda: InterruptThenFailingGraph())
+    request = _request()
+    request.enable_human_interrupts = True
+
+    events = [event async for event in sse.run_and_stream("thread-1", request)]
+    payload = json.loads(events[-1]["data"])
+
+    assert events[-1]["event"] == "interrupt_required"
+    assert payload["thread_id"] == "thread-1"
+    assert payload["interrupt_id"] == "interrupt-1"
+    assert payload["decision"] == "USER_DECISION_REQUIRED"
+    assert not any(event["event"] == "run_failed" for event in events)
