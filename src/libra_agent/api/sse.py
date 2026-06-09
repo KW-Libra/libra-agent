@@ -141,6 +141,18 @@ def _run_failed_event(thread_id: str, exc: Exception, *, phase: str) -> dict[str
     )
 
 
+async def _pending_interrupt_event(graph, config: dict[str, Any], thread_id: str) -> dict[str, str] | None:
+    try:
+        snapshot = await graph.aget_state(config)
+    except Exception:
+        return None
+
+    interrupts = getattr(snapshot, "interrupts", None)
+    if interrupts:
+        return _interrupt_required_event(thread_id, interrupts)
+    return None
+
+
 def _resume_payload(request) -> dict[str, Any]:
     return {
         "approved": request.approved,
@@ -202,6 +214,11 @@ async def run_and_stream(thread_id: str, request) -> AsyncIterator[dict[str, str
         async for event in _stream_node_events(graph, initial_state, config):
             yield event
     except Exception as e:
+        interrupt_event = await _pending_interrupt_event(graph, config, thread_id)
+        if interrupt_event is not None:
+            log.info("run_interrupted_after_stream_exception", thread_id=thread_id)
+            yield interrupt_event
+            return
         log.exception("run_failed", thread_id=thread_id)
         yield _run_failed_event(thread_id, e, phase="run")
         return
@@ -248,6 +265,11 @@ async def resume_and_stream(thread_id: str, request) -> AsyncIterator[dict[str, 
         ):
             yield event
     except Exception as e:
+        interrupt_event = await _pending_interrupt_event(graph, config, thread_id)
+        if interrupt_event is not None:
+            log.info("resume_interrupted_after_stream_exception", thread_id=thread_id)
+            yield interrupt_event
+            return
         log.exception("resume_failed", thread_id=thread_id)
         yield _run_failed_event(thread_id, e, phase="resume")
         return
