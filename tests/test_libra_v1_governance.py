@@ -19,7 +19,12 @@ from libra_agent.libra.judge.final import (
     determine_branch,
     render_rule_based_final_decision,
 )
-from libra_agent.libra.execution_policy import ExecutionMode, IssueStateManager, build_execution_plan
+from libra_agent.libra.execution_policy import (
+    ExecutionMode,
+    ExecutionReasonCode,
+    IssueStateManager,
+    build_execution_plan,
+)
 from libra_agent.libra.mediator import (
     classify_branch,
     compute_consensus,
@@ -363,6 +368,48 @@ class LibraV1GovernanceTests(unittest.TestCase):
         self.assertGreater(plan.trade_deltas["B"], 0.0)
         self.assertGreater(plan.trade_deltas["C"], 0.0)
 
+    def test_execution_policy_prefers_loss_sells_over_gain_sells_when_tax_aware(self) -> None:
+        portfolio = PortfolioSnapshot.from_dict(
+            {
+                "generated_at": "2026-05-10T09:00:00+09:00",
+                "holdings": [
+                    {
+                        "ticker": "A",
+                        "company_name": "A",
+                        "weight": 0.34,
+                        "sector": "EQUITY",
+                        "unrealized_pnl_krw": 1_500_000,
+                    },
+                    {
+                        "ticker": "B",
+                        "company_name": "B",
+                        "weight": 0.31,
+                        "sector": "EQUITY",
+                        "unrealized_pnl_krw": -2_000_000,
+                    },
+                    {"ticker": "C", "company_name": "C", "weight": 0.15, "sector": "EQUITY"},
+                    {"ticker": "D", "company_name": "D", "weight": 0.10, "sector": "EQUITY"},
+                    {"ticker": "E", "company_name": "E", "weight": 0.10, "sector": "EQUITY"},
+                ],
+                "cash_weight": 0.0,
+            }
+        )
+
+        plan = build_execution_plan(
+            portfolio=portfolio,
+            candidate_plan={"A": -0.06},
+            target_weights={"A": 0.2, "B": 0.2, "C": 0.2, "D": 0.2, "E": 0.2},
+            mode=ExecutionMode.RISK_TRIM_AND_REDISTRIBUTE,
+            tax_aware=True,
+        )
+
+        self.assertEqual(plan.validation_status, "VALID")
+        self.assertLess(plan.trade_deltas["B"], 0.0)
+        self.assertNotIn("A", plan.trade_deltas)
+        self.assertAlmostEqual(sum(plan.trade_deltas.values()), 0.0)
+        self.assertIn(ExecutionReasonCode.TAX_LOSS_HARVESTING_PREFERRED, plan.reason_codes)
+        self.assertTrue(plan.tax_adjustments)
+
     def test_issue_state_manager_suppresses_duplicate_issue(self) -> None:
         manager = IssueStateManager(cooldown_observations=20)
 
@@ -567,6 +614,35 @@ class LibraV1GovernanceTests(unittest.TestCase):
         self.assertEqual(result.final_decision.decision, DecisionType.USER_DECISION_REQUIRED)
         self.assertEqual(result.final_decision.branch, DecisionBranch.STRONG_CONFLICT)
         self.assertIn("사용자 확인", result.final_decision.reasoning)
+
+    def test_round2_opinion_records_reversal_from_round1(self) -> None:
+        client = _V1JudgeClient()
+        relaxed_ips = IPSConfig(
+            single_ticker_limit_pct=50.0, sector_limit_pct=100.0, min_cash_pct=0.0
+        )
+
+        result = CommitteeRuntime().run_from_agent_rounds(
+            portfolio=_portfolio(),
+            round1_agent_calls={
+                "profit": lambda: _response("profit", direction=0.9, focus_tickers=["069500"]),
+                "risk": lambda: _response("risk", direction=-0.9, focus_tickers=["069500"]),
+            },
+            round2_agent_call_factory=lambda agent_id, _context: (
+                lambda: _response(
+                    agent_id,
+                    direction=-0.9 if agent_id == "profit" else -0.9,
+                    focus_tickers=["069500"],
+                    turn_number=2,
+                )
+            ),
+            ips=relaxed_ips,
+            kyc=persona_v1_kyc(),
+            mediator_client=client,
+        )
+
+        profit_round2 = next(opinion for opinion in result.round2_opinions if opinion.agent == "Profit")
+        self.assertEqual(profit_round2.delta_from_round1, "REVERSED")
+        self.assertIn("방향이 반전", profit_round2.delta_rationale or "")
 
 
 if __name__ == "__main__":

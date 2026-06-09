@@ -182,6 +182,7 @@ def portfolio_snapshot_to_domain_context(
                 "current_price": float(h.last_price or 0),
                 "average_price": float(h.average_price or 0),
                 "market_value": float(h.market_value_krw or 0),
+                "unrealized_pnl_krw": float(h.unrealized_pnl_krw or 0),
                 "sector": h.sector or "기타",
                 "esg_score": h.esg_score,
                 "carbon_intensity": h.carbon_intensity,
@@ -224,17 +225,27 @@ def domain_verdict_to_agent_response(
     from dataclasses import fields as dc_fields
 
     vote = str(getattr(verdict, "vote", "abstain") or "abstain").lower()
-    direction = _VOTE_TO_DIRECTION.get(vote, 0.0)
+    direction_override = getattr(verdict, "direction", None)
+    direction = (
+        max(-1.0, min(1.0, float(direction_override)))
+        if direction_override is not None
+        else _VOTE_TO_DIRECTION.get(vote, 0.0)
+    )
     confidence = float(getattr(verdict, "confidence", 0.5) or 0.5)
 
     evidence: dict[str, Any] = {}
     domain_signals: list[dict[str, Any]] = []
+    focus_tickers: list[str] = []
     for sig in getattr(verdict, "signals", []) or []:
         if isinstance(sig, dict):
             domain_signals.append(dict(sig))
             label = str(sig.get("label", "")).strip()
             if label:
                 evidence[label] = sig.get("value")
+            for symbol in sig.get("symbols") or sig.get("tickers") or []:
+                symbol_text = str(symbol).strip()
+                if symbol_text and symbol_text not in focus_tickers:
+                    focus_tickers.append(symbol_text)
     llm_used = str(getattr(verdict, "llm_used", "") or "").strip()
     evidence.update(
         {
@@ -260,6 +271,7 @@ def domain_verdict_to_agent_response(
         "source_trust": 0.7,
         "risk_level": "medium" if vote == "reject" else "low",
         "opinion": _VOTE_TO_OPINION.get(vote, "NEUTRAL"),
+        "focus_tickers": focus_tickers,
     }
     valid = {f.name for f in dc_fields(AgentResponse)}
     return AgentResponse(**{k: v for k, v in candidate.items() if k in valid})

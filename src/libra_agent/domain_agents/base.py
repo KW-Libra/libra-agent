@@ -103,6 +103,7 @@ class AgentVerdict:
     rationale: str
     signals: list[dict[str, Any]] = field(default_factory=list)
     llm_used: str = ""  # 실제 사용된 LLM 모델명 (감사 로그용)
+    direction: float | None = None  # -1.0 sell/reduce, +1.0 buy/increase, None이면 vote 기본값
 
 
 # ── 기본 에이전트 클래스 ─────────────────────────────────────────

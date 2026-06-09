@@ -28,6 +28,8 @@ class ExecutionReasonCode(StrEnum):
     TURNOVER_CAP_EXCEEDED = "TURNOVER_CAP_EXCEEDED"
     POLICY_TARGET_DELTA_TOO_SMALL = "POLICY_TARGET_DELTA_TOO_SMALL"
     PENDING_USER_DECISION_SUPPRESSED = "PENDING_USER_DECISION_SUPPRESSED"
+    TAX_LOSS_HARVESTING_PREFERRED = "TAX_LOSS_HARVESTING_PREFERRED"
+    TAX_GAIN_DEFERRAL_APPLIED = "TAX_GAIN_DEFERRAL_APPLIED"
 
 
 @dataclass(slots=True)
@@ -38,6 +40,7 @@ class ExecutionPlan:
     trades: list[Trade]
     validation_status: str
     reason_codes: list[ExecutionReasonCode] = field(default_factory=list)
+    tax_adjustments: list[dict[str, object]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -47,6 +50,7 @@ class ExecutionPlan:
             "trades": [trade.to_dict() for trade in self.trades],
             "validation_status": self.validation_status,
             "reason_codes": [code.value for code in self.reason_codes],
+            "tax_adjustments": [dict(item) for item in self.tax_adjustments],
         }
 
 
@@ -146,12 +150,15 @@ def build_execution_plan(
     participation_rate: float = 1.0,
     max_abs_delta_pct: float | None = None,
     min_abs_delta_pct: float = 0.1,
+    tax_aware: bool = True,
+    min_tax_loss_krw: float = 100_000.0,
 ) -> ExecutionPlan:
     execution_mode = ExecutionMode(str(mode).upper())
     current_weights = current_weights_from_portfolio(portfolio)
     policy_target = normalize_weight_map(target_weights)
     candidate_deltas = _normalize_delta_map(candidate_plan)
     reason_codes: list[ExecutionReasonCode] = []
+    tax_adjustments: list[dict[str, object]] = []
 
     if execution_mode == ExecutionMode.DELTA_ONLY:
         trade_deltas, repair_codes = cash_neutralize_deltas(
@@ -181,6 +188,7 @@ def build_execution_plan(
                 trades=[],
                 validation_status="INVALID",
                 reason_codes=[ExecutionReasonCode.CONFLICT_UNRESOLVED],
+                tax_adjustments=[],
             )
         rate = _clamp(float(participation_rate), 0.0, 1.0)
         trade_deltas = _target_diff(
@@ -205,7 +213,19 @@ def build_execution_plan(
             trades=[],
             validation_status="INVALID",
             reason_codes=[ExecutionReasonCode.CONFLICT_UNRESOLVED],
+            tax_adjustments=[],
         )
+
+    if tax_aware and trade_deltas:
+        trade_deltas, tax_codes, tax_adjustments = prefer_loss_sells_over_gain_sells(
+            trade_deltas,
+            portfolio=portfolio,
+            current_weights=current_weights,
+            target_weights=policy_target,
+            min_abs_delta_pct=min_abs_delta_pct,
+            min_tax_loss_krw=min_tax_loss_krw,
+        )
+        reason_codes.extend(tax_codes)
 
     trades = _deltas_to_trades(
         trade_deltas,
@@ -222,6 +242,7 @@ def build_execution_plan(
             trades=[],
             validation_status="INVALID",
             reason_codes=reason_codes,
+            tax_adjustments=tax_adjustments,
         )
     return ExecutionPlan(
         mode=execution_mode,
@@ -232,6 +253,7 @@ def build_execution_plan(
         reason_codes=reason_codes or [ExecutionReasonCode.ONE_SIDED_PLAN_REPAIRED]
         if _is_repaired(reason_codes)
         else reason_codes,
+        tax_adjustments=tax_adjustments,
     )
 
 
@@ -306,6 +328,110 @@ def repair_one_sided_sell(
     for ticker, gap in eligible_gaps.items():
         repaired[ticker] = proceeds * gap / total_gap
     return repaired
+
+
+def prefer_loss_sells_over_gain_sells(
+    deltas: Mapping[str, float],
+    *,
+    portfolio: PortfolioSnapshot,
+    current_weights: Mapping[str, float],
+    target_weights: Mapping[str, float],
+    min_abs_delta_pct: float,
+    min_tax_loss_krw: float,
+) -> tuple[dict[str, float], list[ExecutionReasonCode], list[dict[str, object]]]:
+    """Shift discretionary sell pressure from gain lots to overweight loss lots.
+
+    This keeps the net cash-neutral rebalance amount unchanged. It only moves an
+    already-planned sell from a taxable-gain holding to another holding that is
+    both loss-making and above policy target, so it cannot create a new
+    tax-loss-harvesting trade from nothing.
+    """
+    result = {ticker: float(delta) for ticker, delta in deltas.items()}
+    min_delta = float(min_abs_delta_pct) / 100.0
+    pnl_by_ticker = _unrealized_pnl_by_ticker(portfolio)
+    if not pnl_by_ticker:
+        return result, [], []
+
+    loss_candidates = [
+        ticker
+        for ticker, pnl in pnl_by_ticker.items()
+        if pnl <= -abs(min_tax_loss_krw)
+        and float(current_weights.get(ticker, 0.0)) > float(target_weights.get(ticker, 0.0)) + min_delta
+    ]
+    gain_sells = [
+        ticker
+        for ticker, delta in result.items()
+        if delta < -min_delta and pnl_by_ticker.get(ticker, 0.0) >= abs(min_tax_loss_krw)
+    ]
+    if not loss_candidates or not gain_sells:
+        return result, [], []
+
+    adjustments: list[dict[str, object]] = []
+    for gain_ticker in gain_sells:
+        remaining_gain_sell = -min(result.get(gain_ticker, 0.0), 0.0)
+        if remaining_gain_sell <= min_delta:
+            continue
+        for loss_ticker in loss_candidates:
+            if loss_ticker == gain_ticker:
+                continue
+            current_loss_sell = -min(result.get(loss_ticker, 0.0), 0.0)
+            overweight_capacity = max(
+                0.0,
+                float(current_weights.get(loss_ticker, 0.0))
+                - float(target_weights.get(loss_ticker, 0.0))
+                - current_loss_sell,
+            )
+            shift = min(remaining_gain_sell, overweight_capacity)
+            if shift < min_delta:
+                continue
+            result[gain_ticker] = result.get(gain_ticker, 0.0) + shift
+            result[loss_ticker] = result.get(loss_ticker, 0.0) - shift
+            remaining_gain_sell -= shift
+            adjustments.append(
+                {
+                    "from_gain_ticker": gain_ticker,
+                    "to_loss_ticker": loss_ticker,
+                    "shift_delta": round(shift, 6),
+                    "deferred_gain_krw": round(max(pnl_by_ticker.get(gain_ticker, 0.0), 0.0), 0),
+                    "harvestable_loss_krw": round(abs(min(pnl_by_ticker.get(loss_ticker, 0.0), 0.0)), 0),
+                }
+            )
+            if remaining_gain_sell <= min_delta:
+                break
+
+    if not adjustments:
+        return result, [], []
+
+    cleaned = {
+        ticker: delta
+        for ticker, delta in result.items()
+        if abs(delta) >= min_delta
+    }
+    codes = [
+        ExecutionReasonCode.TAX_LOSS_HARVESTING_PREFERRED,
+        ExecutionReasonCode.TAX_GAIN_DEFERRAL_APPLIED,
+    ]
+    return cleaned, codes, adjustments
+
+
+def _unrealized_pnl_by_ticker(portfolio: PortfolioSnapshot) -> dict[str, float]:
+    pnl_by_ticker: dict[str, float] = {}
+    for holding in portfolio.holdings:
+        ticker = normalize_ticker(holding.ticker)
+        if not ticker:
+            continue
+        if holding.unrealized_pnl_krw is not None:
+            pnl_by_ticker[ticker] = float(holding.unrealized_pnl_krw)
+            continue
+        if (
+            holding.last_price is not None
+            and holding.average_price is not None
+            and holding.shares is not None
+        ):
+            pnl_by_ticker[ticker] = (
+                float(holding.last_price) - float(holding.average_price)
+            ) * float(holding.shares)
+    return pnl_by_ticker
 
 
 def _target_diff(
@@ -383,6 +509,8 @@ def _rationale_for_mode(
     if mode == ExecutionMode.PARTIAL_POLICY_TARGET:
         return "LLM 리밸런싱 신호를 부분 policy target 이동으로 번역"
     if mode == ExecutionMode.RISK_TRIM_AND_REDISTRIBUTE:
+        if ExecutionReasonCode.TAX_LOSS_HARVESTING_PREFERRED in reason_codes:
+            return "위험/집중도 축소 신호를 세금 손실실현 선호와 함께 underweight 종목 재배분 주문으로 번역"
         return "위험/집중도 축소 신호를 underweight 종목 재배분 주문으로 번역"
     return "candidate delta 기반 현금중립 주문"
 

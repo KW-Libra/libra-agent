@@ -289,6 +289,7 @@ class CommitteeRuntime:
             )
             _annotate_round2_opinions(
                 round2,
+                round1_opinions=round1,
                 previous_round_summary=_round1_summary(round1),
                 exposed_signals=_exposed_signals(
                     round1, exclude_agents={op.agent for op in round2}
@@ -353,6 +354,7 @@ class CommitteeRuntime:
                 mode=execution_mode,
                 participation_rate=_execution_policy_participation_rate(),
                 max_abs_delta_pct=_execution_policy_max_abs_delta_pct(),
+                tax_aware=_execution_policy_tax_aware(),
             )
             execution_plan_payload = execution_plan.to_dict()
             if execution_plan.validation_status == "VALID":
@@ -572,6 +574,16 @@ def _execution_policy_max_abs_delta_pct() -> float | None:
 
 def _execution_policy_resolves_ticker_conflicts() -> bool:
     return os.environ.get("LIBRA_EXECUTION_RESOLVE_TICKER_CONFLICTS", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+
+
+def _execution_policy_tax_aware() -> bool:
+    return os.environ.get("LIBRA_EXECUTION_TAX_AWARE", "1").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -1014,12 +1026,66 @@ def _exposed_signals(
 def _annotate_round2_opinions(
     opinions: list[AgentOpinion],
     *,
+    round1_opinions: list[AgentOpinion],
     previous_round_summary: str,
     exposed_signals: list[str],
 ) -> None:
+    previous_by_agent = {opinion.agent.casefold(): opinion for opinion in round1_opinions}
     for opinion in opinions:
         opinion.previous_round_summary = previous_round_summary
         opinion.exposed_signals = list(exposed_signals)
+        previous = previous_by_agent.get(opinion.agent.casefold())
+        delta, rationale = _round2_delta_from_previous(previous, opinion)
+        opinion.delta_from_round1 = delta
+        opinion.delta_rationale = rationale
+
+
+def _round2_delta_from_previous(
+    previous: AgentOpinion | None,
+    current: AgentOpinion,
+) -> tuple[str, str]:
+    if previous is None:
+        return "UNCHANGED", "Round 1의 같은 에이전트 의견을 찾지 못해 변경 여부를 비교하지 않았습니다."
+    previous_votes = {vote.subject: vote for vote in previous.votes}
+    current_votes = {vote.subject: vote for vote in current.votes}
+    shared_subjects = [subject for subject in current_votes if subject in previous_votes]
+    if not shared_subjects:
+        return "UNCHANGED", "Round 1과 Round 2의 공통 subject가 없어 변경 여부를 비교하지 않았습니다."
+
+    reversed_subjects: list[str] = []
+    strengthened_subjects: list[str] = []
+    weakened_subjects: list[str] = []
+    for subject in shared_subjects:
+        before = previous_votes[subject]
+        after = current_votes[subject]
+        before_dir = before.direction
+        after_dir = after.direction
+        before_mag = abs(float(before.magnitude_pct))
+        after_mag = abs(float(after.magnitude_pct))
+        if (
+            before_dir != Direction.HOLD
+            and after_dir != Direction.HOLD
+            and before_dir != after_dir
+        ):
+            reversed_subjects.append(subject)
+        elif before_dir == Direction.HOLD and after_dir != Direction.HOLD:
+            strengthened_subjects.append(subject)
+        elif before_dir != Direction.HOLD and after_dir == Direction.HOLD:
+            weakened_subjects.append(subject)
+        elif after_mag > before_mag + 0.5:
+            strengthened_subjects.append(subject)
+        elif after_mag + 0.5 < before_mag:
+            weakened_subjects.append(subject)
+
+    if reversed_subjects:
+        return "REVERSED", f"Round 2에서 {', '.join(reversed_subjects[:4])} 방향이 반전되었습니다."
+    if strengthened_subjects and not weakened_subjects:
+        return "STRENGTHENED", f"Round 2에서 {', '.join(strengthened_subjects[:4])} 의견 강도가 커졌습니다."
+    if weakened_subjects and not strengthened_subjects:
+        return "WEAKENED", f"Round 2에서 {', '.join(weakened_subjects[:4])} 의견 강도가 약해졌습니다."
+    if strengthened_subjects or weakened_subjects:
+        return "UNCHANGED", "일부 subject의 강도 변화가 엇갈려 최종 방향은 유지로 기록했습니다."
+    return "UNCHANGED", "다른 에이전트 신호를 검토했지만 기존 의견을 유지했습니다."
 
 
 def _agent_id_from_display(value: str) -> str:
