@@ -2579,21 +2579,33 @@ class JudgeOrchestrator:
         기준으로 상대적으로 강한 종목은 비중 확대(+), 약한 종목은 축소(-)하여 합이
         0이 되도록(현금중립) 맞춘다. 신호가 부족하면 빈 초안을 반환해 HOLD를 유지한다.
         """
-        scan = getattr(knowledge_base, "portfolio_signal_scan", None)
-        if not callable(scan):
-            return {}
-        try:
-            signals, _scan_tool = scan(portfolio)
-        except Exception:  # noqa: BLE001 - 신호 부재 시 보수적으로 빈 초안 유지
-            return {}
         min_abs_signal = 0.1
         weight_tilt = 0.08
         min_abs_delta = 0.005
+        scan = getattr(knowledge_base, "portfolio_signal_scan", None)
+        signals = {}
+        if callable(scan):
+            try:
+                signals, _scan_tool = scan(portfolio)
+            except Exception:  # noqa: BLE001 - 신호 부재 시 보수적으로 폴백을 사용
+                signals = {}
         active = {
             str(ticker): float(signal)
             for ticker, signal in (signals or {}).items()
             if abs(float(signal)) >= min_abs_signal
         }
+        # 보유종목 관련 신규 공시가 없어 신호가 1건 이하이면, 사람이 목표를 정하지
+        # 않는다는 원칙을 지키면서 실제 보유 손익(평단 대비 등락)으로 잠정 신호를
+        # 보강한다. 공시 기반 신호가 있으면 항상 그것을 우선한다.
+        if len(active) < 2:
+            fallback = {
+                ticker: value
+                for ticker, value in self._signals_from_holdings(portfolio).items()
+                if abs(value) >= min_abs_signal
+            }
+            if fallback:
+                fallback.update(active)  # 공시 신호 우선
+                active = fallback
         if len(active) < 2:
             return {}
         mean_signal = sum(active.values()) / len(active)
@@ -2612,6 +2624,36 @@ class JudgeOrchestrator:
             if abs(plan[anchor]) < min_abs_delta:
                 plan.pop(anchor, None)
         return plan
+
+    def _signals_from_holdings(self, portfolio: PortfolioSnapshot) -> dict[str, float]:
+        """공시 신호가 없을 때 실제 보유 손익으로 잠정 방향성 신호를 만든다(폴백).
+
+        목표 비중을 사람이 정하지 않는다는 원칙을 지키되, 신규 공시가 없을 때도
+        실데이터(평단 대비 등락률)에 근거한 리밸런싱 초안을 제시하기 위한 폴백이다.
+        평균회귀 관점에서 평단 대비 많이 오른 종목은 차익 방향(-), 많이 내린 종목은
+        비중 회복 방향(+)으로 잠정 신호를 부여한다. 공시 기반 신호가 아님을 분명히 한다.
+        """
+        rows: list[tuple[str, float]] = []
+        for holding in portfolio.holdings:
+            plr: float | None = None
+            if holding.last_price and holding.average_price and holding.average_price > 0:
+                plr = float(holding.last_price) / float(holding.average_price) - 1.0
+            elif holding.unrealized_pnl_krw is not None and holding.market_value_krw:
+                cost = float(holding.market_value_krw) - float(holding.unrealized_pnl_krw)
+                if cost > 0:
+                    plr = float(holding.unrealized_pnl_krw) / cost
+            if plr is None:
+                continue
+            rows.append((str(holding.ticker), plr))
+        if len(rows) < 2:
+            return {}
+        mean_plr = sum(value for _, value in rows) / len(rows)
+        span = 0.15  # 평단 대비 ±15%p 편차에서 신호가 ±1로 포화되도록 정규화
+        signals: dict[str, float] = {}
+        for ticker, plr in rows:
+            raw = -(plr - mean_plr) / span  # 평균회귀: 초과 상승은 축소, 초과 하락은 확대
+            signals[ticker] = max(-1.0, min(1.0, raw))
+        return signals
 
     def _trade_agent_order(
         self,
