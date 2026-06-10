@@ -12,11 +12,10 @@ from fastapi import FastAPI, HTTPException
 
 from .ingest_bundle import IngestBundleError, knowledge_payload_from_ingest_bundle
 from .libra.agents.evaluation_agent import EvaluationAgent
-from .libra.committee import CommitteeRuntime
 from .libra.direct_indexing import PortfolioDefinition
 from .libra.llm_clients import open_chat_client_from_env
 from .libra.schemas import IPSConfig, KYCProfile, MarketSnapshot
-from .libra_models import AgentResponse, PortfolioSnapshot, TriggerEvent
+from .libra_models import PortfolioSnapshot, TriggerEvent
 from .libra_runtime import JudgeOrchestrator, LocalKnowledgeBase
 from .libra_store import LibraDecisionStore
 
@@ -368,43 +367,6 @@ def _market_snapshot_from_portfolio(portfolio: PortfolioSnapshot) -> MarketSnaps
     )
 
 
-def _attach_governance_v1(
-    result: dict[str, Any], *, payload: Mapping[str, Any], portfolio: PortfolioSnapshot
-) -> dict[str, Any]:
-    raw_governance = (
-        _optional_mapping(payload.get("governance_v1"), field_name="governance_v1") or {}
-    )
-    if raw_governance.get("enabled") is False:
-        return result
-    response_payloads = result.get("agent_responses")
-    if not isinstance(response_payloads, list):
-        return result
-    responses = [
-        AgentResponse.from_dict(item) for item in response_payloads if isinstance(item, Mapping)
-    ]
-    governance_result = CommitteeRuntime().run_from_agent_responses(
-        portfolio=portfolio,
-        responses=responses,
-        ips=_ips_from_payload(portfolio, payload),
-        kyc=_kyc_from_payload(payload),
-        market_data=_market_snapshot_from_portfolio(portfolio),
-    )
-    result["governance_v1"] = governance_result.to_dict()
-    return result
-
-
-def _governance_v1_execution_mode(payload: Mapping[str, Any]) -> str:
-    raw_governance = (
-        _optional_mapping(payload.get("governance_v1"), field_name="governance_v1") or {}
-    )
-    raw_mode = raw_governance.get("execution_mode") or raw_governance.get("mode")
-    env_mode = os.environ.get("LIBRA_GOVERNANCE_V1_EXECUTION_MODE")
-    mode = str(raw_mode or env_mode or "attach").strip().lower()
-    if mode in {"primary", "committee", "v1"}:
-        return "primary"
-    return "attach"
-
-
 def _portfolio_with_definition_targets(
     portfolio: PortfolioSnapshot,
     definition: PortfolioDefinition | None,
@@ -568,40 +530,23 @@ def create_judge_run(payload: dict[str, Any]) -> dict[str, Any]:
                 client=client,
                 checkpoint_path=state_dir / "langgraph.sqlite",
             )
-            if _governance_v1_execution_mode(payload) == "primary":
-                result = orchestrator.run_v1_committee(
-                    query=query,
-                    portfolio=portfolio,
-                    knowledge_base=knowledge_base,
-                    portfolio_definition=portfolio_definition,
-                    depth=str(payload.get("depth") or "medium"),
-                    trigger=trigger,
-                    trigger_event=trigger_event,
-                    deadline_seconds=_as_optional_int(
-                        payload.get("deadline_seconds"), field_name="deadline_seconds"
-                    ),
-                    thread_id=str(payload.get("thread_id")) if payload.get("thread_id") else None,
-                    enable_human_interrupts=_as_bool(payload.get("enable_human_interrupts", False)),
-                    ips=_ips_from_payload(portfolio, payload),
-                    kyc=_kyc_from_payload(payload),
-                    market_data=_market_snapshot_from_portfolio(portfolio),
-                )
-            else:
-                result = orchestrator.run(
-                    query=query,
-                    portfolio=portfolio,
-                    knowledge_base=knowledge_base,
-                    portfolio_definition=portfolio_definition,
-                    depth=str(payload.get("depth") or "medium"),
-                    trigger=trigger,
-                    trigger_event=trigger_event,
-                    deadline_seconds=_as_optional_int(
-                        payload.get("deadline_seconds"), field_name="deadline_seconds"
-                    ),
-                    thread_id=str(payload.get("thread_id")) if payload.get("thread_id") else None,
-                    enable_human_interrupts=_as_bool(payload.get("enable_human_interrupts", False)),
-                )
-                result = _attach_governance_v1(result, payload=payload, portfolio=portfolio)
+            result = orchestrator.run_v1_committee(
+                query=query,
+                portfolio=portfolio,
+                knowledge_base=knowledge_base,
+                portfolio_definition=portfolio_definition,
+                depth=str(payload.get("depth") or "medium"),
+                trigger=trigger,
+                trigger_event=trigger_event,
+                deadline_seconds=_as_optional_int(
+                    payload.get("deadline_seconds"), field_name="deadline_seconds"
+                ),
+                thread_id=str(payload.get("thread_id")) if payload.get("thread_id") else None,
+                enable_human_interrupts=_as_bool(payload.get("enable_human_interrupts", False)),
+                ips=_ips_from_payload(portfolio, payload),
+                kyc=_kyc_from_payload(payload),
+                market_data=_market_snapshot_from_portfolio(portfolio),
+            )
     except HTTPException:
         raise
     except Exception as exc:

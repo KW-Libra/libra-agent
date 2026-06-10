@@ -15,7 +15,6 @@ os.environ.setdefault("LIBRA_DOMAIN_AGENTS_ENABLED", "true")
 from libra_agent.domain_agents._adapter import _run_async
 from libra_agent.errors import ChatClientError
 from libra_agent.libra.constraints import validate_rebalance_plan
-from libra_agent.libra.direct_indexing import PortfolioDefinition
 from libra_agent.libra.evaluation import evaluate_decision_outcome
 from libra_agent.libra.signals import infer_signal_profile
 from libra_agent.libra_models import AgentResponse, AgentVerdict, PortfolioSnapshot, Urgency
@@ -59,44 +58,6 @@ class DomainAdapterChatClient:
         return None
 
 
-class RoutingScriptChatClient:
-    model = "scripted-agentic-test"
-
-    def __init__(
-        self,
-        *,
-        core_actions: list[dict[str, object]],
-        domain_actions: list[dict[str, object]] | None = None,
-        final_payload: dict[str, object] | None = None,
-    ) -> None:
-        self.core_actions = list(core_actions)
-        self.domain_actions = list(domain_actions or [])
-        self.final_payload = dict(final_payload or _hold_final_payload())
-
-    def chat_json(self, **kwargs: object) -> dict[str, object]:
-        system_prompt = str(kwargs.get("system_prompt") or "")
-        user_prompt = str(kwargs.get("user_prompt") or "")
-        if "FINALIZE_DOMAIN_REVIEW" in user_prompt or system_prompt.startswith(
-            "You are the LIBRA Judge orchestrating the domain council layer"
-        ):
-            if not self.domain_actions:
-                raise ChatClientError("domain routing script exhausted")
-            return dict(self.domain_actions.pop(0))
-        if '"action_values":["CALL_AGENT","FINALIZE"]' in user_prompt:
-            if not self.core_actions:
-                raise ChatClientError("core routing script exhausted")
-            return dict(self.core_actions.pop(0))
-        if (
-            '"required_keys"' in user_prompt
-            or "Decide among HOLD, DEFER, USER_DECISION_REQUIRED, REBALANCE" in system_prompt
-        ):
-            return dict(self.final_payload)
-        raise ChatClientError("subagent LLM intentionally offline in orchestration test")
-
-    def ensure_available(self) -> None:
-        return None
-
-
 class RepairingRoutingChatClient:
     model = "repairing-routing-test"
 
@@ -123,20 +84,6 @@ class RepairingRoutingChatClient:
         return None
 
 
-class DomainLLMRouter:
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-
-    def ask(self, *, agent_id: str, **_: object) -> str:
-        self.calls.append(agent_id)
-        if agent_id == "sentiment":
-            return '{"sentiment_score": 0.15, "vote": "approve", "rationale": "테스트 도메인 LLM 응답"}'
-        return "테스트 도메인 LLM 응답. 판단: approve."
-
-    def model_name_for(self, agent_id: str) -> str:
-        return f"test-domain-{agent_id}"
-
-
 class CapturingDomainAgent:
     def __init__(self, agent_id: str = "risk") -> None:
         self.agent_id = agent_id
@@ -156,65 +103,6 @@ class CapturingDomainAgent:
 
 def _call(agent_id: str, reason: str = "LLM이 다음 호출 대상을 선택했습니다.") -> dict[str, object]:
     return {"action": "CALL_AGENT", "agent_id": agent_id, "reason": reason}
-
-
-def _finalize(reason: str = "LLM이 현재 관찰로 충분하다고 판단했습니다.") -> dict[str, object]:
-    return {"action": "FINALIZE", "reason": reason}
-
-
-def _domain_call(
-    agent_id: str, reason: str = "LLM이 도메인 심의 대상을 선택했습니다."
-) -> dict[str, object]:
-    return {"action": "CALL_AGENT", "agent_id": agent_id, "reason": reason}
-
-
-def _domain_done(reason: str = "LLM이 도메인 심의를 마치기로 했습니다.") -> dict[str, object]:
-    return {"action": "FINALIZE_DOMAIN_REVIEW", "reason": reason}
-
-
-def _domain_script() -> list[dict[str, object]]:
-    return [
-        _domain_call(agent_id)
-        for agent_id in ("risk", "tax", "compliance", "macro", "sentiment", "execution", "esg")
-    ] + [_domain_done()]
-
-
-def _hold_final_payload() -> dict[str, object]:
-    return {
-        "decision": "HOLD",
-        "summary": "현재 관찰만으로는 포트폴리오를 변경하지 않습니다.",
-        "confidence": 0.71,
-        "urgency": "defer",
-        "reasoning": "Judge LLM이 Core 관찰과 Domain Council 심의를 종합해 유지 결정을 내렸습니다.",
-        "candidate_rebalance_plan": {},
-        "needs_trade_evaluation": False,
-        "follow_up_at": None,
-        "feedback_checkpoint": None,
-        "user_notification": {
-            "level": "silent",
-            "body": "현재 포트폴리오를 유지합니다.",
-            "action_required": False,
-        },
-    }
-
-
-def _rebalance_final_payload() -> dict[str, object]:
-    return {
-        "decision": "REBALANCE",
-        "summary": "목표비중 편차가 커 후보 리밸런싱 초안을 승인 단계로 올립니다.",
-        "confidence": 0.78,
-        "urgency": "scheduled",
-        "reasoning": "Judge LLM이 목표비중 편차, Profit 검토, Cost 검토, Domain Council 심의를 종합했습니다.",
-        "candidate_rebalance_plan": {"005930": 0.1, "000660": 0.1},
-        "needs_trade_evaluation": True,
-        "follow_up_at": None,
-        "feedback_checkpoint": None,
-        "user_notification": {
-            "level": "info",
-            "body": "리밸런싱 초안을 확인하세요.",
-            "action_required": False,
-        },
-    }
 
 
 def _portfolio() -> PortfolioSnapshot:
@@ -238,28 +126,6 @@ def _portfolio() -> PortfolioSnapshot:
     )
 
 
-def _empty_direct_indexing_portfolio() -> PortfolioSnapshot:
-    return PortfolioSnapshot.from_dict(
-        {
-            "generated_at": "2026-05-07T09:00:00+09:00",
-            "holdings": [
-                {
-                    "ticker": "005930",
-                    "company_name": "삼성전자",
-                    "weight": 0.0,
-                },
-                {
-                    "ticker": "000660",
-                    "company_name": "SK하이닉스",
-                    "weight": 0.0,
-                },
-            ],
-            "total_value_krw": 30000000,
-            "cash_weight": 1.0,
-        }
-    )
-
-
 def _empty_cash_portfolio() -> PortfolioSnapshot:
     return PortfolioSnapshot.from_dict(
         {
@@ -268,20 +134,6 @@ def _empty_cash_portfolio() -> PortfolioSnapshot:
             "total_value_krw": 30000000,
             "cash_weight": 1.0,
             "user_preferences": ["모의투자 기준", "리스크 우선", "무리한 회전율 회피"],
-        }
-    )
-
-
-def _portfolio_definition() -> PortfolioDefinition:
-    return PortfolioDefinition.from_dict(
-        {
-            "name": "반도체 테스트 포트폴리오",
-            "risk_profile": "위험중립형",
-            "drift_threshold": 0.05,
-            "target_weights": [
-                {"ticker": "005930", "company_name": "삼성전자", "weight": 0.5},
-                {"ticker": "000660", "company_name": "SK하이닉스", "weight": 0.5},
-            ],
         }
     )
 
@@ -408,59 +260,6 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
         self.assertEqual(action["agent_id"], "report")
         self.assertEqual(action["candidate_rebalance_plan"], {})
 
-    def test_langgraph_trace_starts_with_judge_and_interleaves_routing(self) -> None:
-        orchestrator = JudgeOrchestrator(
-            client=RoutingScriptChatClient(
-                core_actions=[
-                    _call("disclosure", "정기 점검의 1차 근거로 공시를 확인합니다."),
-                    _call("news", "공시 이후 시장 반응을 확인합니다."),
-                    _finalize("Core 관찰이 충분해 도메인 심의로 이동합니다."),
-                ],
-                domain_actions=_domain_script(),
-                final_payload=_hold_final_payload(),
-            )
-        )
-        orchestrator.domain_router = DomainLLMRouter()
-
-        result = orchestrator.run(
-            query="포트폴리오 정기 점검",
-            portfolio=_portfolio(),
-            knowledge_base=LocalKnowledgeBase(events=[], documents=[], source_paths={}),
-            depth="medium",
-            trigger="pull",
-        )
-
-        decision = result["decision"]
-        trace = decision["decision_trace"]
-
-        self.assertEqual(
-            decision["called_agents"],
-            [
-                "disclosure",
-                "news",
-                "risk",
-                "tax",
-                "compliance",
-                "macro",
-                "sentiment",
-                "execution",
-                "esg",
-            ],
-        )
-        self.assertIn("report", decision["skipped_agents"])
-        self.assertIn("profit", decision["skipped_agents"])
-        self.assertIn("cost", decision["skipped_agents"])
-        self.assertEqual(
-            [node["actor"] for node in trace[:5]],
-            ["judge", "disclosure", "judge", "news", "judge"],
-        )
-        self.assertEqual(trace[0]["query"], "다음 호출 결정: disclosure")
-        self.assertIn("공시", trace[0]["summary"])
-        self.assertEqual(trace[2]["query"], "다음 호출 결정: news")
-        self.assertEqual(trace[4]["query"], "추가 호출 여부 판단")
-        self.assertEqual(trace[5]["query"], "도메인 심의 호출: risk")
-        self.assertIn("Core 판단안", trace[5]["summary"])
-
     def test_domain_council_action_can_route_domain_agent_directly(self) -> None:
         orchestrator = JudgeOrchestrator(
             client=FakeChatClient(
@@ -507,55 +306,6 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
             turn_number=1,
             portfolio=_portfolio(),
             candidate_plan={"005930": 0.08, "000660": -0.03},
-        )
-
-        self.assertEqual(len(domain_agent.contexts), 1)
-        ctx = domain_agent.contexts[0]
-        self.assertEqual(
-            ctx.proposed_trades,
-            [
-                {
-                    "symbol": "005930",
-                    "weight_delta": 0.08,
-                    "side": "buy",
-                    "delta": 0.08,
-                    "action": "BUY",
-                },
-                {
-                    "symbol": "000660",
-                    "weight_delta": -0.03,
-                    "side": "sell",
-                    "delta": -0.03,
-                    "action": "SELL",
-                },
-            ],
-        )
-
-    def test_langgraph_domain_agent_receives_backward_compatible_proposed_trades(self) -> None:
-        domain_agent = CapturingDomainAgent()
-        orchestrator = JudgeOrchestrator(client=FailingChatClient())
-        orchestrator.domain_agents = {"risk": domain_agent}
-
-        orchestrator._graph_runtime._execute_agent(
-            {
-                "query": "후보 리밸런싱 리스크 검토",
-                "portfolio": _portfolio().to_dict(),
-                "knowledge_base": LocalKnowledgeBase(
-                    events=[], documents=[], source_paths={}
-                ).to_state_payload(),
-                "responses": [],
-                "executed_calls": [],
-                "called_agents": [],
-                "pending_call": {
-                    "agent_id": "risk",
-                    "query": "후보 리밸런싱 리스크 검토",
-                    "context": "도메인 리스크 검토",
-                    "depth": "medium",
-                },
-                "pending_call_layer": "domain",
-                "candidate_plan": {"005930": 0.08, "000660": -0.03},
-                "turn_number": 1,
-            }
         )
 
         self.assertEqual(len(domain_agent.contexts), 1)
@@ -628,57 +378,6 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
             sum(abs(delta) for delta in action["candidate_rebalance_plan"].values()), 0.2
         )
         self.assertEqual(action["candidate_rebalance_plan"], {"005930": -0.1, "000660": 0.1})
-
-    def test_direct_indexing_definition_creates_plan_and_trade_reviews(self) -> None:
-        orchestrator = JudgeOrchestrator(
-            client=RoutingScriptChatClient(
-                core_actions=[
-                    _call("disclosure", "목표비중 판단 전 공시를 확인합니다."),
-                    _call("news", "시장 반응을 확인합니다."),
-                    _call("profit", "후보 리밸런싱의 기대수익을 검토합니다."),
-                    _call("cost", "후보 리밸런싱의 실행비용을 검토합니다."),
-                    _finalize("Core 검토가 끝나 도메인 심의로 이동합니다."),
-                ],
-                domain_actions=_domain_script(),
-                final_payload=_rebalance_final_payload(),
-            )
-        )
-        orchestrator.domain_router = DomainLLMRouter()
-
-        result = orchestrator.run(
-            query="초기 설정 목표비중 기준으로 리밸런싱 판단해줘",
-            portfolio=_empty_direct_indexing_portfolio(),
-            knowledge_base=LocalKnowledgeBase(events=[], documents=[], source_paths={}),
-            portfolio_definition=_portfolio_definition(),
-            depth="medium",
-            trigger="pull",
-        )
-
-        decision = result["decision"]
-
-        self.assertEqual(decision["decision"], "REBALANCE")
-        self.assertEqual(decision["candidate_rebalance_plan"], {"005930": 0.1, "000660": 0.1})
-        self.assertEqual(
-            decision["called_agents"],
-            [
-                "disclosure",
-                "news",
-                "profit",
-                "cost",
-                "risk",
-                "tax",
-                "compliance",
-                "macro",
-                "sentiment",
-                "execution",
-                "esg",
-            ],
-        )
-        self.assertIn("direct_indexing", result)
-        self.assertEqual(
-            result["direct_indexing"]["portfolio_definition"]["name"], "반도체 테스트 포트폴리오"
-        )
-        self.assertGreater(result["direct_indexing"]["drift_report"]["portfolio_drift_max"], 0.49)
 
     def test_initial_pull_call_can_start_with_explicit_report_request(self) -> None:
         orchestrator = JudgeOrchestrator(
@@ -872,48 +571,6 @@ class LibraAgenticRuntimeTests(unittest.TestCase):
 
         self.assertEqual(action["action"], "CALL_AGENT")
         self.assertEqual(action["agent_id"], "disclosure")
-
-    def test_empty_portfolio_no_trade_clears_follow_up_at(self) -> None:
-        final_payload = {
-            "decision": "DEFER",
-            "summary": "초기 포트폴리오 후보가 필요합니다.",
-            "confidence": 0.95,
-            "urgency": "defer",
-            "reasoning": "현재는 실행할 매매가 없으므로 사용자 승인은 필요하지 않습니다.",
-            "candidate_rebalance_plan": {},
-            "needs_trade_evaluation": False,
-            "follow_up_at": "2025-05-01T09:00:00+00:00",
-            "feedback_checkpoint": None,
-            "user_notification": {
-                "level": "info",
-                "body": "초기 포트폴리오 후보가 필요합니다.",
-                "action_required": False,
-                "estimated_followup": "2025-05-01T09:00:00+00:00",
-            },
-        }
-        orchestrator = JudgeOrchestrator(
-            client=RoutingScriptChatClient(
-                core_actions=[
-                    _call("disclosure", "빈 포트폴리오의 1차 근거로 공시를 확인합니다."),
-                    _finalize("실행 가능한 거래가 없어 초기 포트폴리오 후보가 필요합니다."),
-                ],
-                final_payload=final_payload,
-            )
-        )
-
-        result = orchestrator.run(
-            query="현재 포트폴리오를 점검하고 유지/조정 필요성을 판단해줘.",
-            portfolio=_empty_cash_portfolio(),
-            knowledge_base=LocalKnowledgeBase(events=[], documents=[], source_paths={}),
-            depth="shallow",
-            trigger="pull",
-        )
-
-        decision = result["decision"]
-        self.assertEqual(decision["decision"], "DEFER")
-        self.assertIsNone(decision["follow_up_at"])
-        self.assertIsNone(decision["user_notification"]["estimated_followup"])
-        self.assertFalse(decision["user_notification"]["action_required"])
 
     def test_judge_phase_rejects_japanese_kana_payload(self) -> None:
         orchestrator = JudgeOrchestrator(

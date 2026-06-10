@@ -14,23 +14,6 @@ from .libra_runtime import JudgeOrchestrator, LocalKnowledgeBase
 from .libra_store import LibraDecisionStore
 
 
-class _ResumeOnlyClient:
-    model = "langgraph_resume"
-
-    def chat_json(
-        self,
-        *,
-        system_prompt: str,
-        user_prompt: str,
-        temperature: float = 0.1,
-    ) -> dict[str, object]:
-        del system_prompt, user_prompt, temperature
-        raise RuntimeError("Resume-only client cannot generate new LLM calls.")
-
-    def ensure_available(self) -> None:
-        return None
-
-
 def _infer_batch_file(batch_dir: Path, stem: str) -> Path | None:
     for candidate in (batch_dir / f"{stem}.jsonl", batch_dir / f"{stem}.json"):
         if candidate.exists():
@@ -43,13 +26,6 @@ def _load_portfolio(path: str | Path) -> PortfolioSnapshot:
     if not isinstance(payload, dict):
         raise RuntimeError("Portfolio file must be a JSON object.")
     return PortfolioSnapshot.from_dict(payload)
-
-
-def _load_resume_payload(value: str) -> object:
-    candidate = Path(value)
-    if candidate.exists() and candidate.is_file():
-        return json.loads(candidate.read_text(encoding="utf-8"))
-    return json.loads(value)
 
 
 def _build_trigger_event(args: argparse.Namespace) -> TriggerEvent | None:
@@ -135,16 +111,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--thread-id",
-        help="Optional LangGraph thread id. Required when resuming an interrupted run.",
+        help="Optional thread id used to correlate a committee run.",
     )
     parser.add_argument(
         "--enable-human-interrupts",
         action="store_true",
-        help="Pause on USER_DECISION_REQUIRED outcomes and wait for a later --resume-json response.",
-    )
-    parser.add_argument(
-        "--resume-json",
-        help="Resume an interrupted LangGraph thread with a JSON payload or a path to a JSON file.",
+        help="Pause on USER_DECISION_REQUIRED outcomes (handled by the production graph path).",
     )
     add_backend_arguments(
         parser, default_backend="ollama", backend_help="Local LLM backend/provider"
@@ -178,63 +150,49 @@ def resolve_inputs(args: argparse.Namespace) -> tuple[Path | None, Path | None, 
     return events_path, normalized_path, enriched_path
 
 
-def _validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str:
-    if args.resume_json:
-        if not args.thread_id:
-            parser.error("--resume-json requires --thread-id.")
-        return "resume"
+def _validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if not args.query:
-        parser.error("--query is required unless --resume-json is used.")
+        parser.error("--query is required.")
     if args.portfolio_source == "file" and not args.portfolio:
-        parser.error("--portfolio is required unless --resume-json is used.")
-    return "run"
+        parser.error("--portfolio is required when --portfolio-source is 'file'.")
 
 
 def main() -> None:
     parser = build_argument_parser()
     args = parser.parse_args()
-    mode = _validate_args(args, parser)
+    _validate_args(args, parser)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     with ExitStack() as stack:
-        if mode == "resume":
-            client = _ResumeOnlyClient()
-        else:
-            client = open_chat_client_from_args(args, stack=stack)
+        client = open_chat_client_from_args(args, stack=stack)
         client.ensure_available()
         orchestrator = JudgeOrchestrator(
             client=client,
             checkpoint_path=Path(args.state_dir) / "langgraph.sqlite",
         )
-        if mode == "resume":
-            result = orchestrator.resume(
-                thread_id=args.thread_id,
-                resume_payload=_load_resume_payload(args.resume_json),
-            )
-        else:
-            events_path, normalized_path, enriched_path = resolve_inputs(args)
-            portfolio = (
-                _load_portfolio(args.portfolio)
-                if args.portfolio_source == "file"
-                else build_kis_portfolio_snapshot(args)
-            )
-            trigger_event = _build_trigger_event(args)
-            knowledge_base = LocalKnowledgeBase.from_files(
-                events_path=events_path,
-                normalized_documents_path=normalized_path,
-                enriched_documents_path=enriched_path,
-            )
-            result = orchestrator.run(
-                query=args.query,
-                portfolio=portfolio,
-                knowledge_base=knowledge_base,
-                depth=args.depth,
-                trigger=args.trigger,
-                trigger_event=trigger_event,
-                deadline_seconds=args.deadline_seconds,
-                thread_id=args.thread_id,
-                enable_human_interrupts=args.enable_human_interrupts,
-            )
+        events_path, normalized_path, enriched_path = resolve_inputs(args)
+        portfolio = (
+            _load_portfolio(args.portfolio)
+            if args.portfolio_source == "file"
+            else build_kis_portfolio_snapshot(args)
+        )
+        trigger_event = _build_trigger_event(args)
+        knowledge_base = LocalKnowledgeBase.from_files(
+            events_path=events_path,
+            normalized_documents_path=normalized_path,
+            enriched_documents_path=enriched_path,
+        )
+        result = orchestrator.run_v1_committee(
+            query=args.query,
+            portfolio=portfolio,
+            knowledge_base=knowledge_base,
+            depth=args.depth,
+            trigger=args.trigger,
+            trigger_event=trigger_event,
+            deadline_seconds=args.deadline_seconds,
+            thread_id=args.thread_id,
+            enable_human_interrupts=args.enable_human_interrupts,
+        )
     store = LibraDecisionStore(args.state_dir)
     runtime = result.get("runtime", {})
     if isinstance(runtime, dict) and runtime.get("interrupted"):

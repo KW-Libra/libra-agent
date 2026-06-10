@@ -455,20 +455,7 @@ def _run_agent_core(state: GraphState) -> dict[str, Any]:
         )
         client.ensure_available()
         orchestrator = JudgeOrchestrator(client=client, checkpoint_path=None)
-        if _governance_v1_execution_mode(state) == "primary":
-            return orchestrator.run_v1_committee(
-                query=str(state.get("query") or ""),
-                portfolio=portfolio,
-                knowledge_base=knowledge_base,
-                portfolio_definition=portfolio_definition,
-                depth=str(state.get("depth") or "medium"),
-                trigger=str(state.get("trigger") or "pull"),
-                trigger_event=trigger_event,
-                deadline_seconds=state.get("deadline_seconds"),
-                thread_id=str(state.get("thread_id") or "") or None,
-                enable_human_interrupts=human_review_enabled,
-            )
-        return orchestrator.run(
+        return orchestrator.run_v1_committee(
             query=str(state.get("query") or ""),
             portfolio=portfolio,
             knowledge_base=knowledge_base,
@@ -480,13 +467,6 @@ def _run_agent_core(state: GraphState) -> dict[str, Any]:
             thread_id=str(state.get("thread_id") or "") or None,
             enable_human_interrupts=human_review_enabled,
         )
-
-
-def _governance_v1_execution_mode(state: GraphState) -> str:
-    payload = state.get("governance_v1")
-    if not isinstance(payload, Mapping):
-        return ""
-    return str(payload.get("execution_mode") or "").strip().casefold()
 
 
 def _portfolio_from_state(state: GraphState) -> PortfolioSnapshot:

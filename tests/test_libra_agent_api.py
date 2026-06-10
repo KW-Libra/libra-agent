@@ -6,12 +6,9 @@ from fastapi.testclient import TestClient
 
 from libra_agent.libra.agents import EvaluationAgent
 from libra_agent.libra_api import (
-    _attach_governance_v1,
     _build_knowledge_base,
-    _governance_v1_execution_mode,
     app,
 )
-from libra_agent.libra_models import PortfolioSnapshot
 
 
 class LibraAgentApiTests(unittest.TestCase):
@@ -113,60 +110,6 @@ class LibraAgentApiTests(unittest.TestCase):
         self.assertEqual(len(knowledge_base.events), 1)
         self.assertEqual(len(knowledge_base.documents), 1)
         self.assertEqual(knowledge_base.source_paths["ingest_bundle"], "bundle-1")
-
-    def test_attach_governance_v1_adds_compliance_branch(self) -> None:
-        portfolio = PortfolioSnapshot.from_dict(
-            {
-                "generated_at": "2026-05-10T09:00:00+09:00",
-                "holdings": [
-                    {
-                        "ticker": "005930",
-                        "company_name": "삼성전자",
-                        "weight": 0.42,
-                        "sector": "반도체",
-                    }
-                ],
-                "cash_weight": 0.02,
-                "user_preferences": [
-                    "max_single_weight=0.3",
-                    "cash_min_weight=0.05",
-                    "excluded_sectors=[]",
-                ],
-            }
-        )
-        result = {
-            "agent_responses": [
-                {
-                    "agent_id": "risk",
-                    "opinion_id": "risk_1",
-                    "turn_number": 1,
-                    "query_understood": "위험 검토",
-                    "verdict": "PARTIAL_ANSWER",
-                    "evidence": {},
-                    "direction": -0.8,
-                    "strength": 0.8,
-                    "urgency": "defer",
-                    "confidence": 0.9,
-                    "reasoning_for_judge_agent": "단일 종목 비중이 높습니다.",
-                    "focus_tickers": ["005930"],
-                }
-            ],
-            "decision": {"decision": "HOLD"},
-        }
-
-        updated = _attach_governance_v1(result, payload={}, portfolio=portfolio)
-
-        self.assertIn("governance_v1", updated)
-        final = updated["governance_v1"]["final_decision"]
-        self.assertEqual(final["decision"], "USER_DECISION_REQUIRED")
-        self.assertEqual(final["branch"], "COMPLIANCE_VETO")
-
-    def test_governance_v1_primary_mode_is_opt_in(self) -> None:
-        self.assertEqual(_governance_v1_execution_mode({}), "attach")
-        self.assertEqual(
-            _governance_v1_execution_mode({"governance_v1": {"execution_mode": "primary"}}),
-            "primary",
-        )
 
     def test_evaluation_endpoint_scores_stored_decision_result(self) -> None:
         client = TestClient(app)

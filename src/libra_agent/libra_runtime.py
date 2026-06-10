@@ -1962,9 +1962,6 @@ class JudgeOrchestrator:
         self._issue_state_manager = IssueStateManager(
             cooldown_observations=_issue_state_cooldown_observations()
         )
-        from .libra_graph import LibraLangGraphRuntime
-
-        self._graph_runtime = LibraLangGraphRuntime(self)
 
     def _routing_agent_ids(self) -> tuple[str, ...]:
         return CORE_ROUTING_AGENT_IDS
@@ -1974,33 +1971,6 @@ class JudgeOrchestrator:
             if agent_id in self.domain_agents and agent_id not in called_agents:
                 return agent_id
         return None
-
-    def run(
-        self,
-        *,
-        query: str,
-        portfolio: PortfolioSnapshot,
-        knowledge_base: LocalKnowledgeBase,
-        portfolio_definition: PortfolioDefinition | None = None,
-        depth: str = "medium",
-        trigger: str = "pull",
-        trigger_event: TriggerEvent | None = None,
-        deadline_seconds: int | None = None,
-        thread_id: str | None = None,
-        enable_human_interrupts: bool = False,
-    ) -> dict[str, Any]:
-        return self._graph_runtime.run(
-            query=query,
-            portfolio=portfolio,
-            knowledge_base=knowledge_base,
-            portfolio_definition=portfolio_definition,
-            depth=depth,
-            trigger=trigger,
-            trigger_event=trigger_event,
-            deadline_seconds=deadline_seconds,
-            thread_id=thread_id,
-            enable_human_interrupts=enable_human_interrupts,
-        )
 
     def run_v1_committee(
         self,
@@ -2136,17 +2106,6 @@ class JudgeOrchestrator:
                 "round2_agent_count": len(governance.round2_opinions),
             },
         }
-
-    def resume(
-        self,
-        *,
-        thread_id: str,
-        resume_payload: Any,
-    ) -> dict[str, Any]:
-        return self._graph_runtime.resume(
-            thread_id=thread_id,
-            resume_payload=resume_payload,
-        )
 
     def _v1_agent_call(
         self,

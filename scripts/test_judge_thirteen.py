@@ -134,7 +134,7 @@ def main() -> None:
 
     orchestrator = JudgeOrchestrator(client=client)
     orchestrator.domain_router = DomainLLMRouter()
-    result = orchestrator.run(
+    result = orchestrator.run_v1_committee(
         query="초기 목표비중 기준으로 13개 에이전트 통합 판단을 검증해줘",
         portfolio=_portfolio(),
         knowledge_base=LocalKnowledgeBase(events=[], documents=[], source_paths={}),
