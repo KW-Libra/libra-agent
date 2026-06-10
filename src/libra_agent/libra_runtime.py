@@ -2046,6 +2046,11 @@ class JudgeOrchestrator:
                 portfolio=portfolio,
                 trigger_event=trigger_event,
             )
+        if not candidate_plan:
+            candidate_plan = self._candidate_plan_from_signals(
+                portfolio=portfolio,
+                knowledge_base=knowledge_base,
+            )
 
         from .libra.committee import CommitteeRuntime
 
@@ -2557,6 +2562,55 @@ class JudgeOrchestrator:
         )
         for holding in other_holdings[:2]:
             plan[holding.ticker] = -0.05
+        return plan
+
+    def _candidate_plan_from_signals(
+        self,
+        *,
+        portfolio: PortfolioSnapshot,
+        knowledge_base: Any,
+    ) -> dict[str, float]:
+        """보유 종목별 이벤트 방향성 신호로 현금중립 리밸런싱 '초안'을 자동 도출한다.
+
+        외부에서 목표 비중(portfolio_definition)이 주어지지 않은 일반 심의에서는
+        평가할 거래 초안 자체가 없어 위원회가 늘 HOLD로 수렴한다. 여기서는 사람이
+        목표를 미리 지정하는 대신, 수집된 공시·뉴스의 종목별 방향성 신호로 초안을
+        만들고 이후 Profit/Domain 에이전트가 이를 검증·조정하도록 한다. 신호 평균을
+        기준으로 상대적으로 강한 종목은 비중 확대(+), 약한 종목은 축소(-)하여 합이
+        0이 되도록(현금중립) 맞춘다. 신호가 부족하면 빈 초안을 반환해 HOLD를 유지한다.
+        """
+        scan = getattr(knowledge_base, "portfolio_signal_scan", None)
+        if not callable(scan):
+            return {}
+        try:
+            signals, _scan_tool = scan(portfolio)
+        except Exception:  # noqa: BLE001 - 신호 부재 시 보수적으로 빈 초안 유지
+            return {}
+        min_abs_signal = 0.1
+        weight_tilt = 0.08
+        min_abs_delta = 0.005
+        active = {
+            str(ticker): float(signal)
+            for ticker, signal in (signals or {}).items()
+            if abs(float(signal)) >= min_abs_signal
+        }
+        if len(active) < 2:
+            return {}
+        mean_signal = sum(active.values()) / len(active)
+        plan: dict[str, float] = {}
+        for ticker, signal in active.items():
+            delta = (signal - mean_signal) * weight_tilt
+            if abs(delta) >= min_abs_delta:
+                plan[ticker] = round(delta, 6)
+        if not plan:
+            return {}
+        # 잔차를 최대 절대값 항목에서 제거해 합을 0(현금중립)에 맞춘다.
+        residual = sum(plan.values())
+        if abs(residual) > 1e-9:
+            anchor = max(plan, key=lambda key: abs(plan[key]))
+            plan[anchor] = round(plan[anchor] - residual, 6)
+            if abs(plan[anchor]) < min_abs_delta:
+                plan.pop(anchor, None)
         return plan
 
     def _trade_agent_order(
