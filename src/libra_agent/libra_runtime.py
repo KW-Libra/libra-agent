@@ -2129,6 +2129,20 @@ class JudgeOrchestrator:
                 else None,
                 "drift_report": drift_report.to_dict() if drift_report else None,
                 "candidate_rebalance_plan": dict(candidate_plan),
+                "signals_plan_debug": {
+                    "holdings_count": len(portfolio.holdings),
+                    "holdings_priced": sum(
+                        1
+                        for h in portfolio.holdings
+                        if h.last_price and h.average_price and h.average_price > 0
+                    ),
+                    "holdings_pnl": sum(
+                        1
+                        for h in portfolio.holdings
+                        if h.unrealized_pnl_krw is not None and h.market_value_krw
+                    ),
+                    "fallback_signal_count": len(self._signals_from_holdings(portfolio)),
+                },
             },
             "runtime": {
                 "engine": "governance_v1_committee",
