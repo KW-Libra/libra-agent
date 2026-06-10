@@ -47,9 +47,9 @@ class ProfitAgent:
             cfg.profit_confidence_max,
         )
         recommendation = (
-            "휴리스틱 v1 시뮬레이션 기준, 거래 규모 대비 완만한 상승 여력이 있습니다."
+            "거래 규모 대비 완만한 상승 여력이 있습니다."
             if plan_score >= 0
-            else "휴리스틱 v1 시뮬레이션 기준, 제안된 거래는 기대 후속 성과가 약한 데 비해 비용을 지불하는 형태입니다."
+            else "제안된 거래는 기대 후속 성과가 약한 데 비해 비용을 지불하는 형태입니다."
         )
         opinion_id = f"profit_{stable_hash({'turn': turn_number, 'plan': rebalance_plan})[:12]}"
         return AgentResponse(
@@ -74,10 +74,7 @@ class ProfitAgent:
             strength=_clamp(gross_change * 4.0, 0.0, 1.0),
             urgency=Urgency.SCHEDULED,
             confidence=confidence,
-            reasoning_for_judge_agent=(
-                "이것은 정적 규칙 기반 시뮬레이터입니다. 후보 안이 기대 후속 성과를 개선하는지에 대한 "
-                "상대적 점검 용도로만 활용하십시오."
-            ),
+            reasoning_for_judge_agent=recommendation,
             limits_acknowledged="수익성 추정은 보정된 몬테카를로 엔진이 아닌 휴리스틱 로컬 신호 모델을 사용합니다.",
             tools_called=[
                 ToolCall(
