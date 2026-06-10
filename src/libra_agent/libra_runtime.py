@@ -2656,6 +2656,21 @@ class JudgeOrchestrator:
                 cost = float(holding.market_value_krw) - float(holding.unrealized_pnl_krw)
                 if cost > 0:
                     plr = float(holding.unrealized_pnl_krw) / cost
+            if plr is None and holding.ohlcv:
+                # 평단/현재가가 없더라도 backend가 첨부한 일봉(ohlcv)의 기간 수익률로
+                # 모멘텀 신호를 만든다(3차 폴백).
+                closes: list[float] = []
+                for row in holding.ohlcv:
+                    if not isinstance(row, Mapping):
+                        continue
+                    try:
+                        value = float(row.get("close"))
+                    except (TypeError, ValueError):
+                        value = 0.0
+                    if value > 0:
+                        closes.append(value)
+                if len(closes) >= 2 and closes[0] > 0:
+                    plr = closes[-1] / closes[0] - 1.0
             if plr is None:
                 continue
             rows.append((str(holding.ticker), plr))
