@@ -47,16 +47,16 @@ class ProfitAgent:
             cfg.profit_confidence_max,
         )
         recommendation = (
-            "Heuristic v1 simulation suggests modest upside relative to trade size."
+            "휴리스틱 v1 시뮬레이션 기준, 거래 규모 대비 완만한 상승 여력이 있습니다."
             if plan_score >= 0
-            else "Heuristic v1 simulation suggests the proposed trade is paying for weak expected follow-through."
+            else "휴리스틱 v1 시뮬레이션 기준, 제안된 거래는 기대 후속 성과가 약한 데 비해 비용을 지불하는 형태입니다."
         )
         opinion_id = f"profit_{stable_hash({'turn': turn_number, 'plan': rebalance_plan})[:12]}"
         return AgentResponse(
             agent_id=self.agent_id,
             opinion_id=opinion_id,
             turn_number=turn_number,
-            query_understood="Evaluate the proposed rebalance plan with a heuristic local simulator.",
+            query_understood="제안된 리밸런싱안을 휴리스틱 로컬 시뮬레이터로 평가합니다.",
             verdict=AgentVerdict.DIRECT_ANSWER,
             evidence={
                 "mode": "plan_simulation",
@@ -75,15 +75,15 @@ class ProfitAgent:
             urgency=Urgency.SCHEDULED,
             confidence=confidence,
             reasoning_for_judge_agent=(
-                "This is a static-rule simulator. Use it as a relative check on whether the candidate plan "
-                "improves expected follow-through."
+                "이것은 정적 규칙 기반 시뮬레이터입니다. 후보 안이 기대 후속 성과를 개선하는지에 대한 "
+                "상대적 점검 용도로만 활용하십시오."
             ),
-            limits_acknowledged="Profit uses a heuristic local signal model, not a calibrated Monte Carlo engine.",
+            limits_acknowledged="수익성 추정은 보정된 몬테카를로 엔진이 아닌 휴리스틱 로컬 신호 모델을 사용합니다.",
             tools_called=[
                 ToolCall(
                     tool_name="local_profit.heuristic_plan_simulation",
-                    purpose="Estimate directional payoff of the candidate rebalance plan",
-                    summary=f"Computed heuristic returns for {len(rebalance_plan)} planned position changes.",
+                    purpose="후보 리밸런싱안의 방향성 손익 추정",
+                    summary=f"계획된 포지션 변경 {len(rebalance_plan)}건에 대해 휴리스틱 수익률을 계산했습니다.",
                 )
             ],
             depth_used="medium",

@@ -43,7 +43,7 @@ class CostAgent:
             agent_id=self.agent_id,
             opinion_id=opinion_id,
             turn_number=turn_number,
-            query_understood="Estimate the execution friction of the candidate rebalance plan.",
+            query_understood="후보 리밸런싱안의 체결 비용(거래 마찰)을 추정합니다.",
             verdict=AgentVerdict.DIRECT_ANSWER,
             evidence={
                 "mode": "trade_cost",
@@ -61,14 +61,14 @@ class CostAgent:
             urgency=Urgency.WATCH if total_friction_bp >= 30.0 else Urgency.SCHEDULED,
             confidence=0.58,
             reasoning_for_judge_agent=(
-                "Execution friction is manageable for small reallocations but rises quickly with gross turnover."
+                "소규모 재배분에서는 체결 비용이 감당 가능한 수준이나, 총 회전율이 커질수록 비용이 빠르게 증가합니다."
             ),
-            limits_acknowledged="Cost uses configurable heuristic basis-point defaults, not live broker fees or orderbook snapshots.",
+            limits_acknowledged="비용 추정은 실시간 증권사 수수료나 호가창이 아닌, 설정 가능한 휴리스틱 bp 기본값을 사용합니다.",
             tools_called=[
                 ToolCall(
                     tool_name="local_cost.heuristic_trade_cost",
-                    purpose="Estimate commission, tax, spread, and slippage",
-                    summary=f"Estimated costs for gross turnover {gross_change:.3f} using local heuristic defaults.",
+                    purpose="수수료·세금·스프레드·슬리피지 추정",
+                    summary=f"총 회전율 {gross_change:.3f}에 대해 로컬 휴리스틱 기본값으로 비용을 추정했습니다.",
                 )
             ],
             depth_used="medium",
