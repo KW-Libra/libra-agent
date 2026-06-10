@@ -347,12 +347,18 @@ async def _node_human_review(state: GraphState) -> dict[str, Any]:
     if not final_decision.get("requires_approval"):
         return {"run_status": "completed"}
 
+    agent_result = state.get("agent_result") or {}
+    direct_indexing = agent_result.get("direct_indexing") or {}
     approval_request = {
         "type": "human_approval",
         "reason": "approval_required",
         "message": "최종 결정 적용 전에 사용자 확인이 필요합니다.",
         "decision": final_decision.get("decision"),
         "branch": final_decision.get("branch"),
+        "candidate_rebalance_plan": final_decision.get("candidate_rebalance_plan")
+        or direct_indexing.get("candidate_rebalance_plan")
+        or {},
+        "signals_plan_debug": direct_indexing.get("signals_plan_debug"),
         "options": [
             {"decision": "APPROVE", "label": "승인"},
             {"decision": "REJECT", "label": "거절"},
