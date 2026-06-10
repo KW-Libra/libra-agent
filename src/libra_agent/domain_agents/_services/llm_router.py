@@ -54,9 +54,9 @@ class LLMModel(StrEnum):
 
 # balanced 정책에서 각 에이전트가 사용할 기본 모델
 AGENT_MODEL_MAP: dict[str, LLMModel] = {
-    "risk": LLMModel.CLAUDE_SONNET,  # 고위험 판단 — Claude
+    "risk": LLMModel.CLAUDE_HAIKU,  # 고위험 판단 — Claude (비용 절감: Haiku)
     "tax": LLMModel.CLAUDE_HAIKU,  # 정형적 계산 — 저렴한 Haiku
-    "compliance": LLMModel.CLAUDE_SONNET,  # 규정 준수 — Claude (신뢰성 우선)
+    "compliance": LLMModel.CLAUDE_HAIKU,  # 규정 준수 — Claude (비용 절감: Haiku)
     "macro": LLMModel.GEMINI_FLASH,  # 뉴스/매크로 요약 — Gemini Flash (고속)
     "sentiment": LLMModel.GEMINI_FLASH,  # 감성 분석 — Gemini Flash (대량 처리)
     "execution": LLMModel.CLAUDE_HAIKU,  # 체결 계산 — 정형적, Haiku
@@ -158,7 +158,7 @@ class LLMRouter:
 
     def _select_model(self, agent_id: str) -> LLMModel:
         if self._policy == "claude":
-            return LLMModel.CLAUDE_SONNET
+            return LLMModel.CLAUDE_HAIKU
         if self._policy == "gemini":
             return LLMModel.GEMINI_FLASH
 

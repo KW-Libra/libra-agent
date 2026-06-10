@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     # --- Anthropic ---
     anthropic_api_key: str = Field(default="")
     anthropic_haiku_model: str = "claude-haiku-4-5"
-    anthropic_sonnet_model: str = "claude-sonnet-4-6"
+    anthropic_sonnet_model: str = "claude-haiku-4-5"
 
     # --- S3 ---
     s3_bucket: str = ""
