@@ -358,7 +358,6 @@ async def _node_human_review(state: GraphState) -> dict[str, Any]:
         "candidate_rebalance_plan": final_decision.get("candidate_rebalance_plan")
         or direct_indexing.get("candidate_rebalance_plan")
         or {},
-        "signals_plan_debug": direct_indexing.get("signals_plan_debug"),
         "options": [
             {"decision": "APPROVE", "label": "승인"},
             {"decision": "REJECT", "label": "거절"},

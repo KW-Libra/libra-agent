@@ -2129,28 +2129,6 @@ class JudgeOrchestrator:
                 else None,
                 "drift_report": drift_report.to_dict() if drift_report else None,
                 "candidate_rebalance_plan": dict(candidate_plan),
-                "signals_plan_debug": {
-                    "holdings_count": len(portfolio.holdings),
-                    "holdings_priced": sum(
-                        1
-                        for h in portfolio.holdings
-                        if h.last_price and h.average_price and h.average_price > 0
-                    ),
-                    "fallback_signal_count": len(self._signals_from_holdings(portfolio)),
-                    "fallback_abs_max": round(
-                        max(
-                            (abs(v) for v in self._signals_from_holdings(portfolio).values()),
-                            default=0.0,
-                        ),
-                        4,
-                    ),
-                    "fallback_ge_010": sum(
-                        1
-                        for v in self._signals_from_holdings(portfolio).values()
-                        if abs(v) >= 0.1
-                    ),
-                    "candidate_plan_size": len(candidate_plan),
-                },
             },
             "runtime": {
                 "engine": "governance_v1_committee",
